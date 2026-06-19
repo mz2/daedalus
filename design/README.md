@@ -75,6 +75,15 @@ Build these as reusable GPUI components (port from `prototype/components.css` + 
 - Embedded terminal pane (mono, toolbar) — GPUI view over `alacritty_terminal`
 - Command palette (⌘K), notifications popover, settings modal
 
+## Information architecture decision (home view)
+
+**Decision**: the **landing/home view is the aggregate Tasks board** (what every agent is doing at the
+task level), as in the locked prototype — not the Fleet list. **Fleet** remains the session-level unified
+view (FR-025) and is one click away in the nav. This supersedes the design-brief §5 ordering (which listed
+Fleet first). Rationale: the operator's primary question is "what are the agents working on / what needs
+attention," which the task board answers most directly; Fleet is for session-level triage. Reversible if
+usability testing argues for a Fleet-first landing.
+
 ## Screens ↔ tasks
 
 | Screen (prototype) | Spec / design-brief | tasks.md |

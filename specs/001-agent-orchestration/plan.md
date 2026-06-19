@@ -123,8 +123,8 @@ crates/
                                     #   event-stream API over the core, wiring + config
 
 apps/
-└── desktop/                        # Native GPUI GUI (gpui + gpui-component) — thin surface
-    └── src/                        #   (apps/web/ deferred — see Complexity Tracking)
+└── desktop/                        # Native GPUI GUI (gpui + gpui-component) — package `daedalus-desktop`,
+    └── src/                        #   thin surface (apps/web/ deferred — see Complexity Tracking)
         ├── theme.rs                #   design tokens/skins/themes ported from design/
         ├── components/             #   status badge, cards, nav, titlebar, terminal pane, …
         └── screens/                #   tasks(home), fleet, session, start, discover, tools, backends, settings

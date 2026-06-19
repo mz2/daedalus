@@ -44,7 +44,8 @@ Rules:
 - `Completed` requires **all** tracked tasks done OR explicit operator confirmation — never agent exit
   alone (FR-015a, SC-004).
 - A clean agent exit with tracked tasks unfinished ⇒ `AwaitingConfirmation` (not `Completed`).
-- Agent crash / abnormal exit ⇒ `Failed`; no-progress for the configured interval ⇒ `Stalled`.
+- Agent crash / abnormal exit ⇒ `Failed`; no output/progress for the configured stall interval ⇒ `Stalled`
+  (operator-configurable; **default 120s**).
 - Loss of contact with the environment is surfaced and last-known state preserved (FR-020); reconciliation
   on restart re-derives status (FR-030).
 - Terminal states: `Completed`, `Failed`, `Stopped`. `Stalled` and `AwaitingConfirmation` are non-terminal

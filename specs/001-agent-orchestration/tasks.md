@@ -179,6 +179,7 @@ session's identity/backend/status, with unavailable backends clearly marked.
 
 - [ ] T053 [P] [US5] Contract test for backend availability never erroring + unavailable marking (C-B4) in `tests/contract/availability.rs`
 - [ ] T054 [P] [US5] Integration test: fleet view lists every session w/ tool/objective/backend/env/status; concurrency limit rejection (FR-026); backend-unavailable mid-session marked, others keep working (AS US5) in `tests/integration/fleet.rs`
+- [ ] T054a [P] [US5] Backend-portability test: run the same session-lifecycle suite (start → monitor → stop/clean-up) **unchanged** against `fake` and one real backend and assert identical operator workflow/outcomes (SC-008) in `tests/integration/portability.rs`
 
 ### Implementation for User Story 5
 
@@ -203,6 +204,7 @@ session's identity/backend/status, with unavailable backends clearly marked.
 - [ ] T064 [P] Build the GPUI Settings screen (tunnels, concurrency limit, notifications, theme, visible local-first posture) per design-brief §6.8 in `apps/desktop/src/screens/settings.rs`
 - [ ] T065 [P] Accessibility pass: WCAG-AA contrast in both themes, status not color-only, keyboard nav + focus, AccessKit labels (design-brief §11, R-A11Y)
 - [ ] T066 Performance validation against success criteria (SC-001 <2min start, SC-003 <5s output, SC-005 <30s stop, SC-006 ≥10 concurrent, SC-009 <10s discover/connect, SC-010 <5s task status)
+- [ ] T066a [P] Assert genuinely-native packaging (FR-007b): a CI check fails the build if any Electron/CEF/system-webview (e.g. `wry`, `tao`, `webkit2gtk`) dependency appears in the `apps/desktop` dependency tree
 - [ ] T067 Run the quickstart.md end-to-end on macOS and Linux and fix any drift; confirm `just run`/`test`/`lint` all green
 - [ ] T068 [P] Verify spec/plan/tasks scope consistency (phased surfaces — desktop first, web subsequent; already reflected in spec FR-007a/SC-011 and plan) and refresh `CLAUDE.md` Recent Changes
 
