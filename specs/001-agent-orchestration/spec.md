@@ -238,9 +238,11 @@ backend, and status independently. Delivers fleet-level visibility and backend p
 - **FR-007**: System MUST provide a Daedalus application as the primary operator interface for
   orchestrating and monitoring sessions.
 - **FR-007a**: The application MUST be structured as a shared application core (sessions, backends,
-  discovery, state) with separate thin presentation layers: a genuinely native desktop GUI and a web UI.
-  The same operator capabilities MUST be available on every surface. ("Shared codebase" refers to the
-  shared core, not shared UI rendering.)
+  discovery, state) with separate thin presentation layers. Surfaces are delivered in phases: the **native
+  desktop GUI is the first surface** and a **web UI is a planned subsequent surface**. The core MUST remain
+  surface-agnostic so the web UI is additive (no orchestration logic in any surface). The same operator
+  capabilities MUST be available on each **delivered** surface (capability parity across delivered
+  surfaces). ("Shared codebase" refers to the shared core, not shared UI rendering.)
 - **FR-007b**: The desktop GUI MUST be implemented with genuinely native UI technologies and MUST NOT use
   Electron or a bundled/system-webview shell for its UI; it MUST run as a native desktop application on
   both macOS and Linux.
@@ -393,10 +395,12 @@ backend, and status independently. Delivers fleet-level visibility and backend p
 - **SC-009**: An operator can discover and connect to a running session (on the local host, an
   mDNS-advertised host, or a tunneled Workshop) within 10 seconds of it becoming reachable.
 - **SC-010**: A tracked task's status change appears on its session's task-status board within 5 seconds.
-- **SC-011**: The application provides a genuinely native desktop GUI on both macOS and Linux plus a web
-  UI, all built over a shared application core (no Electron), and 100% of operator capabilities (start,
-  discover, connect, monitor via embedded terminal and task board, control) are available on every
-  surface.
+- **SC-011**: The application is built over a shared application core (no Electron) with thin presentation
+  surfaces. The **first delivered surface** is a genuinely native desktop GUI on both macOS and Linux, on
+  which 100% of operator capabilities (start, discover, connect, monitor via embedded terminal and task
+  board, control) are available. A **web UI is a planned subsequent surface**; when delivered it MUST offer
+  the same capabilities over the same shared core (capability parity across delivered surfaces). See the
+  implementation plan for the phased surface scope.
 - **SC-012**: The application exposes no open network listener by default — verified by confirming that,
   with no operator-established tunnel, the control plane is reachable only from the operator's local
   context.

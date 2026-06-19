@@ -99,15 +99,22 @@ worse local testability. Validate multi-source dedup against the same session ad
 ## R4. Remote reach — authenticated tunnels
 
 **Decision**: Daedalus never opens a network listener by default (FR-032, SC-012). Remote hosts and remote
-Workshops are reached only over **operator-established authenticated tunnels** (e.g. SSH or WireGuard-style),
-modelled as a tunnel registry the operator configures; discovery and attachment ride existing tunnels rather
-than Daedalus exposing a service.
+Workshops are reached only over **operator-established authenticated tunnels**, modelled as a tunnel
+registry the operator configures; discovery and attachment ride existing tunnels rather than Daedalus
+exposing a service. Daedalus is **transport-agnostic**: a tunnel entry is `{name, local_endpoint,
+reachable_targets}` and Daedalus connects to the local endpoint only. The **default/reference mechanism is
+SSH local port-forwarding** (`ssh -L`), because it is ubiquitous, operator-authenticated, and needs no
+in-environment listener; **WireGuard** (or any operator-run tunnel exposing a loopback endpoint) is
+supported by the same registry with no code change. Daedalus does **not** establish or manage credentials
+for the tunnel — the operator brings it up; Daedalus only records the local endpoint to dial.
 
-**Rationale**: Principle III (local-first) and FR-033. Keeps attack surface minimal; the operator owns the
-trust boundary.
+**Rationale**: Principle III (local-first) and FR-033. Keeps attack surface minimal and the trust boundary
+with the operator; picking SSH as the documented default removes the underspecification while leaving the
+mechanism pluggable.
 
 **Alternatives**: a built-in listening control service with auth — rejected: violates the no-open-listener
-posture and SC-012. A managed/relay service — out of v1 scope (single-operator).
+posture and SC-012. A managed/relay service — out of v1 scope (single-operator). Hard-coding a single tunnel
+technology — rejected: the registry abstraction costs little and avoids lock-in.
 
 ## R5. Backend abstraction + the two v1 backends
 

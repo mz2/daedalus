@@ -153,8 +153,8 @@ can be added later as an additive surface without touching orchestration.
 > as planned. The multi-crate split and the fake backend are required by backend pluggability (FR-027) and
 > Principle III (local testability), not optional complexity.
 >
-> One recorded **spec** deviation (not a constitution violation):
+> One **phased-scope** decision (now reflected in the spec — not an open deviation, not a constitution violation):
 
-| Deviation | Why | Simpler/compliant alternative deferred because |
-|-----------|-----|------------------------------------------------|
-| Web surface omitted from this implementation (FR-007a, SC-011 require web + parity) | Operator decision (2026-06-19) to ship a single native GPUI desktop surface first and avoid an FFI/second-toolchain UI; faster path to the core value (orchestrate + monitor) | Building web now doubles surface work before the core is proven; the `daedalus-app` boundary keeps the core surface-agnostic so web is added later without rework. `spec.md`/tasks to be updated to reflect the phased scope. |
+| Scope decision | Why | How it stays compliant |
+|----------------|-----|------------------------|
+| Deliver the native GPUI desktop surface first; web UI is a planned subsequent surface | Operator decision (2026-06-19): ship the core value (orchestrate + monitor) on one native surface first and avoid an FFI/second-toolchain UI before the core is proven | spec.md FR-007a/SC-011 now phase the surfaces explicitly; the `daedalus-app` boundary keeps the core surface-agnostic so the web UI is additive with no rework, preserving capability parity across delivered surfaces. |

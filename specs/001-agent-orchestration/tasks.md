@@ -100,7 +100,9 @@ recorded terminal state (completed/awaiting-confirmation/failed/stalled) when th
 
 - [ ] T027 [P] [US2] Contract test for terminal attach (C-T1 latency, C-T2 unattachable reason, C-T3 excessive output) in `tests/contract/terminal_attach.rs`
 - [ ] T028 [P] [US2] Contract test for `WorkshopSdk::task_states` parsing SpecKit `tasks.md` checkbox state (C-S1, ≤5s) in `tests/contract/sdk_task_states.rs`
-- [ ] T029 [P] [US2] Integration test: output streams to the terminal (FR-016), board reflects task changes (FR-017), and terminal-state determination incl. awaiting-confirmation (FR-015a) in `tests/integration/monitor.rs`
+- [ ] T029 [P] [US2] Integration test: output streams to the terminal (FR-016), board reflects task changes (FR-017), terminal-state determination incl. awaiting-confirmation (FR-015a), and the session record (output + task history + outcome) is persisted (FR-018, covers T033) in `tests/integration/monitor.rs`
+- [ ] T029a [P] [US2] Integration test: resource usage (CPU/memory/disk/time) surfaces to `AppQuery` for a running session (FR-019, covers T034) in `tests/integration/resource_usage.rs`
+- [ ] T029b [P] [US2] Integration test: the operator is notified when a session reaches a terminal/abnormal state (FR-021, covers T036) in `tests/integration/notifications.rs`
 
 ### Implementation for User Story 2
 
@@ -202,7 +204,7 @@ session's identity/backend/status, with unavailable backends clearly marked.
 - [ ] T065 [P] Accessibility pass: WCAG-AA contrast in both themes, status not color-only, keyboard nav + focus, AccessKit labels (design-brief §11, R-A11Y)
 - [ ] T066 Performance validation against success criteria (SC-001 <2min start, SC-003 <5s output, SC-005 <30s stop, SC-006 ≥10 concurrent, SC-009 <10s discover/connect, SC-010 <5s task status)
 - [ ] T067 Run the quickstart.md end-to-end on macOS and Linux and fix any drift; confirm `just run`/`test`/`lint` all green
-- [ ] T068 [P] Update `spec.md` to record the phased scope (web surface deferred) and refresh `CLAUDE.md` Recent Changes
+- [ ] T068 [P] Verify spec/plan/tasks scope consistency (phased surfaces — desktop first, web subsequent; already reflected in spec FR-007a/SC-011 and plan) and refresh `CLAUDE.md` Recent Changes
 
 ---
 
@@ -227,6 +229,9 @@ session's identity/backend/status, with unavailable backends clearly marked.
 ### Within each story
 
 Tests (write first, must fail) → models/types → core services → backend/zellij/discovery → GPUI screen.
+
+**Cross-story UI dependency**: every GPUI screen task (T026, T035, T046, T058, T059, T060, T064) depends on
+the design-system port **T017** (theme tokens + core components); screens MUST NOT be built before T017 lands.
 
 ### Parallel opportunities
 
