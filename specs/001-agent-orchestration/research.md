@@ -18,6 +18,12 @@ reworking orchestration.
 
 **Operator decision (2026-06-19)**: build with GPUI + gpui-component; forget the web frontend for now.
 
+**Visual design is locked** to the prototype design system in [`design/`](../../design/) (canonical export
+`design/Daedalus-Prototype-standalone.html`; design→GPUI mapping in `design/README.md`): two platform-native
+skins (Yaru/Ubuntu, Cupertino), dark+light themes, density steps, and a color-blind-safe status palette
+(incl. an awaiting-confirmation hue matching FR-015a). The GPUI surface ports these tokens/components; see
+plan.md and spec.md FR-009a.
+
 ### Why GPUI fits
 
 - **No FFI boundary** — GPUI is Rust, running in-process with `daedalus-core`; the UI shares

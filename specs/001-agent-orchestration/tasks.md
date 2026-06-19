@@ -10,6 +10,11 @@ but MUST keep the suite green.
 **Scope note**: Per `plan.md` / `research.md` §R1, the **web surface is deferred**; the single surface is the
 native GPUI desktop app (`apps/desktop`). The core stays surface-agnostic so a web UI is additive later.
 
+**Design note**: All GPUI screen/component tasks implement the **locked design system** in
+[`design/`](../../design/) — tokens, skins (Yaru/mac), themes, status palette, and per-screen layouts are
+specified in `design/README.md` (mapped from `design/Daedalus-Prototype-standalone.html`). Port it; the
+foundational theme/component task is T017. Screen→task mapping is in `design/README.md`.
+
 **Organization**: grouped by user story (US1–US5) for independent implementation and testing.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -50,7 +55,8 @@ app-API, and the GPUI shell. **No user story can begin until this phase is compl
 - [ ] T014 Implement the `fake` in-memory backend in `crates/daedalus-backend-fake/src/lib.rs` (drives all contract/integration tests locally — Principle III)
 - [ ] T015 [P] Implement the secret-redaction-on-capture utility in `crates/daedalus-core/src/redact.rs` with a failing test first in `tests/unit/redact.rs` (FR-031)
 - [ ] T016 Define the app-API surface (`Command`, `AppQuery`, `AppEvent`) in `crates/daedalus-app/src/api.rs` per contracts/app-api.md (no orchestration logic in surfaces)
-- [ ] T017 Implement the GPUI app shell in `apps/desktop/src/app.rs` (window, persistent nav, dark/light theme, global status indicator) per design-brief §6.1, wired to `daedalus-app`
+- [ ] T017 [P] Port the design system to GPUI in `apps/desktop/src/theme.rs` + `apps/desktop/src/components/` — tokens for Yaru/mac skins × dark/light themes × density, status palette (incl. awaiting-confirmation), typography (Ubuntu/JetBrains Mono), and core components (status badge, buttons, chips, cards, grouped list, meters, nav, titlebar) per `design/README.md` and `design/Daedalus-Prototype-standalone.html`
+- [ ] T017a Implement the GPUI app shell in `apps/desktop/src/app.rs` (skin-correct titlebar + window controls, sidebar/topbar nav with Hosts list, global status counts, command palette ⌘K, notifications, settings, dark/light theme) per `design/README.md` + design-brief §6.1, wired to `daedalus-app` (depends on T017)
 
 **Checkpoint**: foundation builds; fake backend + persistence + state machine are exercised by failing→passing tests; the desktop shell opens.
 

@@ -12,6 +12,8 @@ Auto-generated from all feature plans. Last updated: 2026-06-19
 - **Multiplex/discovery**: zellij; mDNS (`mdns-sd`); operator-established authenticated tunnels (no open
   listener by default).
 - **Backends**: `workshop` (Canonical Workshop, Linux), `macos` (Seatbelt/App Sandbox), `fake` (local testing).
+- **Design system**: locked to `design/` (canonical `design/Daedalus-Prototype-standalone.html`; GPUI mapping
+  in `design/README.md`) — Yaru/mac skins, dark+light, color-blind-safe status palette (icon+label). Port it.
 
 ## Project Structure
 
@@ -24,7 +26,8 @@ apps/
   desktop/              # GPUI surface (apps/web/ deferred)
 tests/
   contract/             integration/
-specs/001-agent-orchestration/   # spec, plan, research, data-model, contracts, quickstart
+design/                 # visual source of truth: prototype export + design→GPUI mapping (README.md)
+specs/001-agent-orchestration/   # spec, plan, research, data-model, contracts, quickstart, tasks
 ```
 
 ## Commands

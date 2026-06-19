@@ -22,10 +22,19 @@ GPUI view (via `alacritty_terminal`) attached to zellij. The **web surface is de
 implementation (operator decision, 2026-06-19); the core stays surface-agnostic so a web UI can be added
 later. See [research.md](./research.md) §R1 for the decision and the recorded spec deviation.
 
+The **visual design is locked** to the prototype design system in [`design/`](../../design/) (canonical
+export `design/Daedalus-Prototype-standalone.html`, mapped to GPUI in `design/README.md`): two platform-native
+skins (Yaru/Ubuntu → Linux, Cupertino → macOS), dark+light themes, adjustable density, and a color-blind-safe
+status palette (paired with icon+label) that maps 1:1 to `SessionStatus`/`TaskStatus`. The GPUI surface ports
+these tokens and components rather than inventing new ones.
+
 ## Technical Context
 
 **Language/Version**: Rust 1.83+ (2021 edition) end-to-end — core, backends, discovery, SDK, shared
 contracts, **and the UI** (GPUI is Rust; no second language, no FFI).  
+**Design system**: ported from [`design/`](../../design/) — tokens (color/status palette, typography
+Ubuntu+JetBrains Mono, radii, spacing, motion, shadows), per-skin (Yaru/mac) × per-theme (dark/light)
+values, and the component/screen inventory in `design/README.md`. The GPUI theme module implements these.  
 **Primary Dependencies**: `gpui` + `gpui-component` (native desktop GUI); `alacritty_terminal` (embedded
 terminal engine for the GPUI terminal view); `tokio` (async runtime); zellij (session multiplexing/attach);
 `mdns-sd` or equivalent (mDNS discovery); an authenticated-tunnel mechanism (operator-established, e.g.
@@ -115,7 +124,15 @@ crates/
 
 apps/
 └── desktop/                        # Native GPUI GUI (gpui + gpui-component) — thin surface
-                                    #   (apps/web/ deferred — see Complexity Tracking)
+    └── src/                        #   (apps/web/ deferred — see Complexity Tracking)
+        ├── theme.rs                #   design tokens/skins/themes ported from design/
+        ├── components/             #   status badge, cards, nav, titlebar, terminal pane, …
+        └── screens/                #   tasks(home), fleet, session, start, discover, tools, backends, settings
+
+design/                             # Visual source of truth (prototype + design→GPUI mapping)
+├── Daedalus-Prototype-standalone.html  # canonical latest export
+├── README.md                       # design system → GPUI mapping (tokens, components, screens)
+└── prototype/                      # unpacked readable source (css/jsx/assets/screenshots)
 
 tests/
 ├── contract/                       # Backend trait, SDK protocol, discovery, persistence

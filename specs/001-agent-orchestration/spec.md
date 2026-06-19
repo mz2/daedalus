@@ -249,6 +249,13 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   own web service (or equivalent) on the web UI.
 - **FR-009**: System MUST present a per-session task-status board showing the status of each tracked
   task for that session.
+- **FR-009a**: The operator UI MUST follow the project's locked design system (see the UI design brief and
+  the `design/` design-system reference). Concretely it MUST: present a platform-native appearance on each
+  desktop platform (macOS and Linux); support both dark and light themes; render every session and task
+  status using a color-blind-safe status palette **paired with an icon and label** (status MUST NOT be
+  conveyed by color alone); support adjustable information density; and provide keyboard-first operation
+  including a command palette. (The specific UI toolkit is a planning decision; this requirement is about
+  the operator-visible design language and behavior.)
 
 **Discovery & Connectivity**
 
@@ -408,6 +415,13 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   and a web UI. Electron and webview-shell approaches are excluded for the desktop GUI. The specific
   native UI technology is a planning decision; the requirement is genuinely native desktop UI plus a web
   UI over a shared core, with capability parity — not a particular framework.
+- **Operator UI follows a locked design system**: The visual and interaction design is fixed by the
+  project design system (the UI design brief plus the `design/` reference — a prototype export and its
+  design→implementation mapping). It defines platform-native skins (Ubuntu/Yaru on Linux, Cupertino on
+  macOS), dark and light themes, adjustable density, a color-blind-safe status palette paired with
+  icon+label, and keyboard-first operation with a command palette (FR-009a). Implementation ports this
+  design rather than inventing a new visual language. (The current build targets the native desktop
+  surface first; see the implementation plan for the phased surface scope.)
 - **Sessions managed within zellij**: All agent sessions are managed inside the zellij terminal
   multiplexer and reached/attached through it; zellij's own web service may provide the embedded terminal
   UI on both surfaces, which keeps implementation scope small.

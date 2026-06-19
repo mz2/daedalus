@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Daedalus — App Icon</title>
+<link rel="icon" type="image/svg+xml" href="assets/daedalus-icon.svg" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Ubuntu", system-ui, sans-serif;
+    background: radial-gradient(120% 120% at 50% 0%, #1c1c1f, #0c0c0e);
+    color: #f2f2f5; min-height: 100vh; padding: 64px 40px;
+    display: flex; flex-direction: column; align-items: center; gap: 44px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .hero { display: flex; flex-direction: column; align-items: center; gap: 22px; text-align: center; }
+  .hero-icon { width: 184px; height: 184px; filter: drop-shadow(0 24px 48px rgba(0,0,0,.55)); }
+  .hero-icon svg, .hero-icon img { width: 100%; height: 100%; display: block; }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
+  .tagline { font-size: 14.5px; color: rgba(235,235,245,.62); max-width: 460px; line-height: 1.55; }
+  .accent { color: #E95420; font-weight: 500; }
+
+  .panel {
+    width: min(880px, 100%); background: rgba(255,255,255,.025);
+    border: .5px solid rgba(255,255,255,.1); border-radius: 18px; padding: 30px 34px;
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  .panel h2 { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: rgba(235,235,245,.4); }
+
+  /* size ramp */
+  .sizes { display: flex; align-items: flex-end; gap: 30px; flex-wrap: wrap; }
+  .size { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+  .size .lbl { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: rgba(235,235,245,.4); }
+  .size img { display: block; border-radius: 22%; }
+
+  /* contexts */
+  .contexts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .ctx { border-radius: 14px; padding: 22px; display: flex; align-items: center; gap: 16px; border: .5px solid rgba(255,255,255,.08); }
+  .ctx.dark { background: #161619; }
+  .ctx.light { background: #f4f4f6; }
+  .ctx img { width: 56px; height: 56px; border-radius: 24%; flex: 0 0 auto; }
+  .ctx .meta { display: flex; flex-direction: column; gap: 3px; }
+  .ctx .ctx-name { font-size: 15px; font-weight: 600; }
+  .ctx.dark .ctx-name { color: #f2f2f5; }
+  .ctx.light .ctx-name { color: #1d1d1f; }
+  .ctx .ctx-sub { font-size: 11.5px; }
+  .ctx.dark .ctx-sub { color: rgba(235,235,245,.5); }
+  .ctx.light .ctx-sub { color: rgba(60,60,67,.55); }
+
+  /* faux titlebars */
+  .bars { display: flex; flex-direction: column; gap: 12px; }
+  .bar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px; border-radius: 10px; }
+  .bar.mac { background: #ececee; }
+  .bar.yaru { background: #303030; }
+  .bar .lights { display: flex; gap: 7px; }
+  .bar .l { width: 12px; height: 12px; border-radius: 50%; }
+  .bar.mac .l.r { background: #ff5f57; } .bar.mac .l.y { background: #febc2e; } .bar.mac .l.g { background: #28c840; }
+  .mark { width: 22px; height: 22px; border-radius: 6px; background: #E95420; display: grid; place-items: center; }
+  .mark svg { width: 14px; height: 14px; }
+  .bar .title { font-size: 13px; font-weight: 600; }
+  .bar.mac .title { color: #1d1d1f; } .bar.yaru .title { color: #f2f2f5; }
+  .bar .sp { flex: 1; }
+  .bar.yaru .lights { margin-left: auto; }
+  .bar.yaru .l { width: 22px; height: 22px; border-radius: 5px; background: rgba(255,255,255,.08); }
+
+  .concept { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .cc { display: flex; flex-direction: column; gap: 6px; }
+  .cc .k { font-size: 13px; font-weight: 600; color: #E95420; }
+  .cc .v { font-size: 12.5px; color: rgba(235,235,245,.6); line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="hero">
+    <div class="hero-icon"><img src="assets/daedalus-icon.svg" alt="Daedalus icon" /></div>
+    <h1>Daedalus</h1>
+    <p class="tagline">The <span class="accent">Labyrinth</span> Daedalus built — reimagined as orchestration. Three nested walls with shifting openings; at the heart, the glowing <span class="accent">agent</span> at work.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Size ramp</h2>
+    <div class="sizes">
+      <div class="size"><img src="assets/daedalus-icon.svg" width="128" height="128" /><span class="lbl">128</span></div>
+      <div class="size"><img src="assets/daedalus-icon.svg" width="64" height="64" /><span class="lbl">64</span></div>
+      <div class="size"><img src="assets/daedalus-icon.svg" width="48" height="48" /><span class="lbl">48</span></div>
+      <div class="size"><img src="assets/daedalus-icon.svg" width="32" height="32" /><span class="lbl">32</span></div>
+      <div class="size"><img src="assets/daedalus-icon.svg" width="16" height="16" /><span class="lbl">16</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>On surfaces</h2>
+    <div class="contexts">
+      <div class="ctx dark"><img src="assets/daedalus-icon.svg" /><div class="meta"><span class="ctx-name">Daedalus</span><span class="ctx-sub">Dark dock / launcher</span></div></div>
+      <div class="ctx light"><img src="assets/daedalus-icon.svg" /><div class="meta"><span class="ctx-name">Daedalus</span><span class="ctx-sub">Light dock / launcher</span></div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>In the title bar (brand mark)</h2>
+    <div class="bars">
+      <div class="bar mac">
+        <div class="lights"><span class="l r"></span><span class="l y"></span><span class="l g"></span></div>
+        <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"><path d="M9.5 20 L4 20 L4 4 L20 4 L20 20 L14.5 20"/><path d="M10 8.5 L8 8.5 L8 15.5 L16 15.5 L16 8.5 L14 8.5"/><circle cx="12" cy="12" r="1.5" fill="#fff" stroke="none"/></svg></div>
+        <span class="title">Daedalus</span>
+      </div>
+      <div class="bar yaru">
+        <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"><path d="M9.5 20 L4 20 L4 4 L20 4 L20 20 L14.5 20"/><path d="M10 8.5 L8 8.5 L8 15.5 L16 15.5 L16 8.5 L14 8.5"/><circle cx="12" cy="12" r="1.5" fill="#fff" stroke="none"/></svg></div>
+        <span class="title">Daedalus</span>
+        <span class="sp"></span>
+        <div class="lights"><span class="l"></span><span class="l"></span><span class="l"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>The idea</h2>
+    <div class="concept">
+      <div class="cc"><span class="k">The myth</span><span class="v">Daedalus designed the Labyrinth — the original feat of intricate, controlled structure.</span></div>
+      <div class="cc"><span class="k">The agent</span><span class="v">The bright core is an autonomous agent at work, deep inside its sandbox.</span></div>
+      <div class="cc"><span class="k">The product</span><span class="v">Orchestrating many agents through their mazes — legible paths, one calm centre.</span></div>
+    </div>
+  </div>
+</body>
+</html>
