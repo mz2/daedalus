@@ -9,6 +9,11 @@
 *.sqlite-*
 /.daedalus/
 
+# Nix
+/result
+/result-*
+.direnv/
+
 # Editor / OS
 .idea/
 .vscode/

@@ -72,16 +72,19 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 
 The real window is built with **GPUI** (Zed's GPU framework) behind the `gpui` feature — it
 needs a GPU/display and several system libraries (fontconfig, freetype, libxkbcommon,
-wayland/x11, vulkan):
+wayland/x11, vulkan) that gpui `dlopen`s at run time. The simplest way to get them all is the
+**Nix dev shell**, which also pins the Rust toolchain and `zellij`:
 
 ```bash
-# On Nix: expose the system libs from the store (no global install needed).
-source scripts/gpui-env.sh
+nix develop                                                  # provides rust + the system libs
 DAEDALUS_BACKEND=fake cargo run -p daedalus-desktop --features gpui
 ```
 
-On a non-Nix distro, install those `-dev` packages instead and skip the `source` step. The
-window shows the title bar with live status counts, the backends sidebar, and the fleet with
+> Without the dev shell (or `source scripts/gpui-env.sh` as a fallback), the window panics on
+> startup with `NoWaylandLib` because those runtime libraries aren't on `LD_LIBRARY_PATH`. On
+> a non-Nix distro, install the `-dev` packages and run directly.
+
+The window shows the title bar with live status counts, a backends sidebar, and the fleet with
 **Start session / Stop / Confirm / Clean up** controls (state refreshes ~2×/sec). A
 [`justfile`](justfile) wraps everything as `just build|run|run-gpui|test|lint`. The default
 headless build keeps CI and local TDD fast; the GPUI renderer is opt-in (research risk R-UI).

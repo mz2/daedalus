@@ -39,37 +39,53 @@ pub fn run(app: App, handle: Handle) {
     );
     let tasks_path = tasks_path.to_string_lossy().into_owned();
 
-    application().run(move |cx: &mut GpuiApp| {
-        let bounds = Bounds::centered(None, gpui::size(px(1180.0), px(760.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |_window, cx| {
-                cx.new(|cx| {
-                    // Refresh live state ~2×/sec so backend/task changes appear without polling.
-                    cx.spawn(async move |this, cx| loop {
-                        let _ = this.update(cx, |_, cx| cx.notify());
-                        cx.background_executor()
-                            .timer(Duration::from_millis(500))
-                            .await;
-                    })
-                    .detach();
+    // gpui dlopen()s libwayland/libvulkan/libxkbcommon by name; if they're not on
+    // LD_LIBRARY_PATH it panics deep inside platform init. Catch that and print actionable
+    // guidance instead of a raw backtrace.
+    let launched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        application().run(move |cx: &mut GpuiApp| {
+            let bounds = Bounds::centered(None, gpui::size(px(1180.0), px(760.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |_window, cx| {
+                    cx.new(|cx| {
+                        // Refresh live state ~2×/sec so changes appear without polling.
+                        cx.spawn(async move |this, cx| loop {
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                            cx.background_executor()
+                                .timer(Duration::from_millis(500))
+                                .await;
+                        })
+                        .detach();
 
-                    RootView {
-                        app: app.clone(),
-                        handle: handle.clone(),
-                        theme: Theme::host_default(),
-                        tool,
-                        tasks_path: tasks_path.clone(),
-                    }
-                })
-            },
-        )
-        .expect("open window");
-        cx.activate(true);
-    });
+                        RootView {
+                            app: app.clone(),
+                            handle: handle.clone(),
+                            theme: Theme::host_default(),
+                            tool,
+                            tasks_path: tasks_path.clone(),
+                        }
+                    })
+                },
+            )
+            .expect("open window");
+            cx.activate(true);
+        });
+    }));
+
+    if launched.is_err() {
+        eprintln!(
+            "\nDaedalus: could not initialize the native GPUI window — its runtime libraries \
+             (libwayland/libvulkan/libxkbcommon/libGL) were not found.\n\n\
+             Fix: run inside the project's Nix dev shell, which exposes them:\n    \
+             nix develop\n    DAEDALUS_BACKEND=fake cargo run -p daedalus-desktop --features gpui\n\n\
+             Or, without Nix flakes:  source scripts/gpui-env.sh  (then re-run).\n"
+        );
+        std::process::exit(1);
+    }
 }
 
 /// Register the demo tool (idempotent — reuses the persisted one by name).
