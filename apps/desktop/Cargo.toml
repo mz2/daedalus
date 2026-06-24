@@ -1,0 +1,47 @@
+[package]
+name = "daedalus-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Daedalus native desktop surface (GPUI). The GPUI renderer is behind the `gpui` feature."
+
+[[bin]]
+name = "daedalus-desktop"
+path = "src/main.rs"
+
+[features]
+# The GPUI renderer is a heavy git dependency that needs a GPU/display and per-platform
+# validation (research R-UI). It is opt-in so the headless build/test flow stays fast.
+default = []
+gpui = ["dep:gpui", "dep:gpui_platform"]
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-app = { workspace = true }
+daedalus-core = { workspace = true }
+daedalus-backend = { workspace = true }
+daedalus-backend-fake = { workspace = true }
+daedalus-backend-macos = { workspace = true }
+daedalus-backend-workshop = { workspace = true }
+daedalus-zellij = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# The real GPUI framework (Zed's). Pulled only with `--features gpui`; Cargo.lock pins the
+# exact commit once resolved. Heavy: needs a GPU/display + system libs (vulkan, wayland/x11,
+# fontconfig, …) to build and run.
+gpui = { git = "https://github.com/zed-industries/zed.git", optional = true }
+
+# The platform launcher (`application()`); platform features are target-specific.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", optional = true, features = ["font-kit", "wayland", "x11"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", optional = true, features = ["font-kit"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+daedalus-tests = { path = "../../tests" }

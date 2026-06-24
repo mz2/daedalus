@@ -1,0 +1,18 @@
+[package]
+name = "daedalus-backend-workshop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Canonical Workshop (Linux) sandbox backend for Daedalus."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-backend = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

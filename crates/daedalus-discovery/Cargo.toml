@@ -1,0 +1,19 @@
+[package]
+name = "daedalus-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Multi-source session discovery (local / mDNS / tunneled Workshop) + de-duplication."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-zellij = { workspace = true }
+daedalus-sdk = { workspace = true }
+async-trait = { workspace = true }
+mdns-sd = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "daedalus-zellij"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "zellij session multiplexing / attach and terminal-channel glue for Daedalus."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }

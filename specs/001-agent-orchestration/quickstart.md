@@ -27,13 +27,20 @@ cargo build --workspace
 ## Run (fake backend — no Workshop needed)
 
 ```bash
-# Launch the native desktop GUI against the in-memory fake backend.
+# Default build is headless: wires the app to the fake backend, reconciles, and prints the
+# backend availability + fleet summary. Fast, no GPU required (validates wiring + quickstart).
 DAEDALUS_BACKEND=fake cargo run -p daedalus-desktop
+
+# The native GPUI window is behind the `gpui` feature (it needs a GPU/display — research
+# R-UI). On Nix, source the helper first to expose the system libs gpui links against:
+source scripts/gpui-env.sh    # Nix only; otherwise install the -dev packages
+DAEDALUS_BACKEND=fake cargo run -p daedalus-desktop --features gpui
 ```
 
-Then, in the app: register a sample agentic tool → start a session (fresh environment) → watch the
+In the GPUI UI: register a sample agentic tool → start a session (fresh environment) → watch the
 embedded terminal stream and the task-status board update → stop / confirm / clean up. This exercises
-US1–US2 and the lifecycle state machine end-to-end locally.
+US1–US2 and the lifecycle state machine end-to-end locally. The same flows are covered headlessly by
+`cargo test --workspace` against the `fake` backend.
 
 ## Test
 

@@ -1,0 +1,12 @@
+[package]
+name = "daedalus-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-Workshop SDK: advertises a connectable session + parses SDD task state."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+serde = { workspace = true }

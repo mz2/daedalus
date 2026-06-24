@@ -1,0 +1,197 @@
+//! Status enums shared across the core and surfaces. These map 1:1 to the locked design
+//! system's status palette (`design/README.md`) and drive the state machine in
+//! `daedalus-core`.
+
+use serde::{Deserialize, Serialize};
+
+/// Lifecycle status of a [`crate::entities::Session`].
+///
+/// State machine (see `data-model.md`):
+/// `Starting → Running → {Completed | Failed | Stalled | Stopped | AwaitingConfirmation}`.
+///
+/// Terminal states: [`Completed`](SessionStatus::Completed),
+/// [`Failed`](SessionStatus::Failed), [`Stopped`](SessionStatus::Stopped).
+/// [`Stalled`](SessionStatus::Stalled) and
+/// [`AwaitingConfirmation`](SessionStatus::AwaitingConfirmation) are non-terminal attention
+/// states the operator resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    /// Provisioning / launching.
+    Starting,
+    /// Agent is live.
+    Running,
+    /// All tracked tasks done, or operator confirmed (FR-015a, SC-004).
+    Completed,
+    /// Crash / non-zero exit / provisioning failure (FR-005).
+    Failed,
+    /// No output/progress for the configured stall interval.
+    Stalled,
+    /// Stopped by the operator (FR-022).
+    Stopped,
+    /// Clean agent exit with tracked tasks unfinished — needs operator confirmation (FR-015a).
+    AwaitingConfirmation,
+}
+
+impl SessionStatus {
+    /// True for states that never transition again: `Completed`, `Failed`, `Stopped`.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            SessionStatus::Completed | SessionStatus::Failed | SessionStatus::Stopped
+        )
+    }
+
+    /// True for states that ask the operator for attention but can still progress.
+    #[must_use]
+    pub fn is_attention(self) -> bool {
+        matches!(
+            self,
+            SessionStatus::Stalled | SessionStatus::AwaitingConfirmation
+        )
+    }
+
+    /// Stable lowercase token used by the design-system status palette and persistence.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionStatus::Starting => "starting",
+            SessionStatus::Running => "running",
+            SessionStatus::Completed => "completed",
+            SessionStatus::Failed => "failed",
+            SessionStatus::Stalled => "stalled",
+            SessionStatus::Stopped => "stopped",
+            SessionStatus::AwaitingConfirmation => "awaiting",
+        }
+    }
+}
+
+/// Status of a single [`crate::entities::TrackedTask`], read from SDD artifacts (FR-017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Not started (`- [ ]`).
+    Todo,
+    /// In progress (marker convention `- [~]` / `- [-]`).
+    InProgress,
+    /// Done (`- [x]` / `- [X]`).
+    Done,
+    /// Explicitly blocked (`- [!]`).
+    Blocked,
+}
+
+impl TaskStatus {
+    /// Stable lowercase token for the status palette / persistence.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskStatus::Todo => "todo",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Done => "done",
+            TaskStatus::Blocked => "blocked",
+        }
+    }
+}
+
+/// Availability of a backend or a discovery source. Unavailability is a *value*, never an
+/// error (FR-028, contract C-B4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    /// Reachable and healthy.
+    Available,
+    /// Reachable but impaired (e.g. partial capability).
+    Degraded,
+    /// Not reachable (host stopped advertising / tunnel dropped / backend down).
+    Unavailable,
+}
+
+/// Whether an environment is freshly provisioned or attached to a pre-existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// A brand-new isolated environment.
+    Fresh,
+    /// An operator-selected pre-existing environment; requires an isolated git worktree
+    /// (FR-002a).
+    PreExisting,
+}
+
+/// The kind of source a session was discovered through (FR-010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// Local zellij sessions on this host.
+    Local,
+    /// Advertised on the LAN over mDNS (`_daedalus._tcp`).
+    Mdns,
+    /// Reached via an operator-established tunnel into a Workshop host.
+    TunneledWorkshop,
+}
+
+/// Which backend provides an environment (FR-027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendKind {
+    /// Canonical Workshop (Linux).
+    Workshop,
+    /// macOS local sandbox (Seatbelt / App Sandbox).
+    MacosSandbox,
+    /// In-memory fake backend for local testing (Principle III).
+    Fake,
+}
+
+impl BackendKind {
+    /// Stable lowercase token (matches `DAEDALUS_BACKEND` env values).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BackendKind::Workshop => "workshop",
+            BackendKind::MacosSandbox => "macos",
+            BackendKind::Fake => "fake",
+        }
+    }
+}
+
+/// Lifecycle of a sandbox environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvLifecycle {
+    /// Being provisioned.
+    Provisioning,
+    /// Ready to host an agent.
+    Ready,
+    /// Being torn down.
+    Releasing,
+    /// Fully released.
+    Released,
+    /// No longer reachable.
+    Unavailable,
+}
+
+/// Kind of an [`crate::entities::EventRecord`] (FR-018).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// Captured terminal output (stored as a capture-file reference).
+    Output,
+    /// A tracked task changed status.
+    TaskStatusChange,
+    /// A lifecycle/state transition.
+    Lifecycle,
+}
+
+/// Kind of a [`crate::entities::ResourceUsageMetric`] (FR-019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricKind {
+    /// CPU utilisation (percent).
+    Cpu,
+    /// Memory used (bytes).
+    Memory,
+    /// Disk used (bytes).
+    Disk,
+    /// Wall-clock time consumed (seconds).
+    Time,
+}

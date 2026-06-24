@@ -49,6 +49,18 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 
 ## Recent Changes
 
+- 001-agent-orchestration (implemented 2026-06-19): Cargo workspace built out test-first. Headless stack
+  complete and green (`cargo test --workspace`: 86 passing; `clippy -D warnings` clean) — `daedalus-proto`,
+  `daedalus-backend` (+ `fake`/`workshop`/`macos`), SQLite persistence + file-backed capture, the session
+  state machine, secret redaction, discovery (local/mDNS/tunnel + dedup) and the in-Workshop SDK, the
+  orchestration `daedalus-core`, and the surface-agnostic `daedalus-app` API. Contract + integration tests
+  live under `tests/` (`[[test]]` targets). `apps/desktop` ports the design system to typed tokens and builds
+  screen view-models as compiled, unit-tested Rust. The native **GPUI window is implemented** behind the
+  non-default `gpui` feature (`apps/desktop/src/gpui_ui.rs`): real `gpui`/`gpui_platform` deps, a live-
+  refreshing fleet with Start/Stop/Confirm/Clean-up controls and AccessKit roles/labels; it builds, links,
+  and opens a window (verified on Linux/Wayland). On Nix, `source scripts/gpui-env.sh` exposes the system
+  libs gpui links against. The default build stays headless and CI-checked via `scripts/check-native.sh`.
+  Pending (need real hardware): perf validation and the macOS run.
 - 001-agent-orchestration: Rust workspace + GPUI desktop UI decided; web surface deferred (recorded spec
   deviation). Plan, research, data-model, contracts, and quickstart generated.
 

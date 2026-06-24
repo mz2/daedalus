@@ -1,0 +1,22 @@
+[package]
+name = "daedalus-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Surface-agnostic app service: command/query/event API over the Daedalus core."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-core = { workspace = true }
+daedalus-backend = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+daedalus-backend-fake = { workspace = true }
+tempfile = { workspace = true }
