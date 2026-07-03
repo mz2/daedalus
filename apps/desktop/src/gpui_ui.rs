@@ -254,6 +254,29 @@ impl AppRoot {
         })
         .detach();
 
+        // While a terminal is open, pump repaints at ~30fps so its background PTY-reader
+        // task is drained promptly; otherwise it would only redraw on other window events.
+        cx.spawn(async move |this, cx| loop {
+            let has_term = match this.update(cx, |this, cx| {
+                let open = this.terminal.is_some();
+                if open {
+                    cx.notify();
+                }
+                open
+            }) {
+                Ok(open) => open,
+                Err(_) => break,
+            };
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(if has_term {
+                    33
+                } else {
+                    200
+                }))
+                .await;
+        })
+        .detach();
+
         Self {
             app,
             handle,
