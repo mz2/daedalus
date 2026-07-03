@@ -227,6 +227,12 @@ impl Core {
         Ok(self.store.latest_metrics(id)?)
     }
 
+    /// The tail of a session's redacted captured output, for display (FR-016).
+    #[must_use]
+    pub fn session_output(&self, id: SessionId, max_bytes: usize) -> String {
+        self.store.output_tail(id, max_bytes)
+    }
+
     /// Backend availability rows (FR-028).
     pub async fn backends_status(&self) -> Vec<daedalus_proto::BackendStatus> {
         self.backends.statuses().await

@@ -554,6 +554,19 @@ impl Store {
         Ok(event)
     }
 
+    /// Read the tail of a session's redacted capture file (empty if none), for display.
+    #[must_use]
+    pub fn output_tail(&self, session: SessionId, max_bytes: usize) -> String {
+        let path = self.captures_dir.join(format!("{session}.log"));
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let start = bytes.len().saturating_sub(max_bytes);
+                String::from_utf8_lossy(&bytes[start..]).into_owned()
+            }
+            Err(_) => String::new(),
+        }
+    }
+
     /// Insert a pre-built event record.
     pub fn insert_event(&self, event: &EventRecord) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");

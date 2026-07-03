@@ -5,9 +5,10 @@
 //! (research R-UI); live state refreshes on a timer and commands run on the tokio runtime.
 
 use gpui::{
-    div, prelude::*, px, App as GpuiApp, Bounds, Context, FocusHandle, Focusable, Rgba,
+    div, prelude::*, px, App as GpuiApp, Bounds, Context, Entity, FocusHandle, Focusable, Rgba,
     SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
+use gpui_component::input::{Input, InputState};
 use gpui_component::sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem};
 use gpui_component::{button::Button, button::ButtonVariants};
 use gpui_component::{h_flex, v_flex, IconName, Root, StyledExt, TitleBar};
@@ -17,7 +18,7 @@ use tokio::runtime::Handle;
 use daedalus_app::{App, AppQuery, Command};
 use daedalus_proto::{
     ArtifactRef, BackendKind, Capabilities, InvocationSpec, Objective, ObjectiveId, Origin,
-    SessionStatus, TaskStatus, ToolDef, ToolId,
+    SessionId, SessionStatus, TaskStatus, ToolDef, ToolId,
 };
 
 use crate::app::{NavItem, StatusCounts};
@@ -79,8 +80,18 @@ pub fn run(app: App, handle: Handle) {
                 };
 
                 cx.open_window(options, |window, cx| {
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx).placeholder("Send input to the agent…")
+                    });
                     let root = cx.new(|cx| {
-                        AppRoot::new(app.clone(), handle.clone(), tool, tasks_path.clone(), cx)
+                        AppRoot::new(
+                            app.clone(),
+                            handle.clone(),
+                            tool,
+                            tasks_path.clone(),
+                            input,
+                            cx,
+                        )
                     });
                     cx.new(|cx| Root::new(root, window, cx))
                 })
@@ -132,8 +143,11 @@ struct AppRoot {
     handle: Handle,
     palette: Palette,
     active: NavItem,
+    /// When set, the Session detail screen is shown for this session.
+    selected: Option<SessionId>,
     tool: ToolId,
     tasks_path: String,
+    input: Entity<InputState>,
     focus_handle: FocusHandle,
 }
 
@@ -143,6 +157,7 @@ impl AppRoot {
         handle: Handle,
         tool: ToolId,
         tasks_path: String,
+        input: Entity<InputState>,
         cx: &mut Context<Self>,
     ) -> Self {
         // Refresh live state ~2×/sec so backend/task changes appear without polling.
@@ -159,8 +174,10 @@ impl AppRoot {
             handle,
             palette: Palette::host_default(),
             active: NavItem::Tasks,
+            selected: None,
             tool,
             tasks_path,
+            input,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -171,6 +188,14 @@ impl AppRoot {
             if let Err(e) = app.execute(command).await {
                 tracing::warn!("command failed: {e}");
             }
+        });
+    }
+
+    /// Sample a session's resource usage on the tokio runtime (the refresh timer re-reads it).
+    fn sample_usage(&self, id: SessionId) {
+        let core = self.app.core().clone();
+        self.handle.spawn(async move {
+            let _ = core.record_resource_usage(id).await;
         });
     }
 
@@ -306,6 +331,12 @@ impl AppRoot {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // A selected session takes over the content area with its detail screen.
+        if let Some(id) = self.selected {
+            if self.app.session(id).is_some() {
+                return self.render_detail(id, cx).into_any_element();
+            }
+        }
         match self.active {
             NavItem::Tasks => self.render_tasks().into_any_element(),
             NavItem::Fleet => self.render_sessions(cx).into_any_element(),
@@ -436,10 +467,163 @@ impl AppRoot {
                         cx.notify();
                     })),
             );
+            row = row.child(
+                Button::new(SharedString::from(format!("open-{id}")))
+                    .label("Open")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected = Some(id);
+                        this.sample_usage(id);
+                        cx.notify();
+                    })),
+            );
 
             list = list.child(card().child(row));
         }
         screen("Sessions", "Every session across backends").child(list)
+    }
+
+    fn render_detail(&self, id: SessionId, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette;
+        let Some(detail) = self.app.session(id) else {
+            return screen("Session", "not found");
+        };
+        let s = &detail.session;
+        let tone = StatusTone::from_session(s.status);
+
+        // Header: back + tool/objective + status pill.
+        let header = h_flex()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("back")
+                    .ghost()
+                    .label("← Back")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.selected = None;
+                        cx.notify();
+                    })),
+            )
+            .child(status_pill(p, tone))
+            .child(div().font_semibold().child(detail.tool.name.clone()))
+            .child(
+                div()
+                    .text_sm()
+                    .opacity(0.6)
+                    .child(detail.objective.description.clone()),
+            );
+
+        // Lifecycle controls.
+        let mut controls = h_flex().gap_2();
+        if s.status == SessionStatus::AwaitingConfirmation {
+            controls = controls.child(
+                Button::new("d-confirm")
+                    .primary()
+                    .label("Confirm")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dispatch(Command::ConfirmCompletion(id));
+                        cx.notify();
+                    })),
+            );
+        }
+        if !s.status.is_terminal() {
+            controls = controls.child(Button::new("d-stop").danger().label("Stop").on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.dispatch(Command::StopSession(id));
+                    cx.notify();
+                }),
+            ));
+        }
+        controls = controls.child(Button::new("d-clean").ghost().label("Clean up").on_click(
+            cx.listener(move |this, _, _, cx| {
+                this.dispatch(Command::CleanUp(id));
+                this.selected = None;
+                cx.notify();
+            }),
+        ));
+
+        // Send-input row (disabled with a reason when the tool doesn't accept input).
+        let accepts = s.accepts_input;
+        let send_row = h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().child(Input::new(&self.input)))
+            .child(if accepts {
+                Button::new("send")
+                    .label("Send input")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let text = this.input.read(cx).value().to_string();
+                        if !text.is_empty() {
+                            this.dispatch(Command::SendInput {
+                                session: id,
+                                data: format!("{text}\n").into_bytes().into(),
+                            });
+                            this.input.update(cx, |st, cx| st.set_value("", window, cx));
+                            cx.notify();
+                        }
+                    }))
+            } else {
+                Button::new("send").label("Send input (unsupported)")
+            });
+
+        // Task board.
+        let board = self.app.task_board(id);
+        let mut board_el = v_flex().gap_1().child(section_label("Task board"));
+        if board.is_empty() {
+            board_el = board_el.child(empty("No tracked tasks."));
+        }
+        for t in board {
+            let ttone = StatusTone::from_task(t.status);
+            board_el = board_el.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(status_pill(p, ttone))
+                    .child(div().font_semibold().text_sm().child(t.id.0.clone()))
+                    .child(div().text_sm().child(t.description.clone())),
+            );
+        }
+
+        // Telemetry.
+        let mut tele = h_flex().gap_4().child(section_label("Telemetry"));
+        for m in self.app.resource_usage(id) {
+            tele = tele.child(
+                v_flex()
+                    .gap_0()
+                    .child(
+                        div()
+                            .text_xs()
+                            .opacity(0.6)
+                            .child(format!("{:?}", m.metric)),
+                    )
+                    .child(div().font_semibold().child(format!("{:.0}", m.value))),
+            );
+        }
+
+        // Captured output (redacted). Empty for the fake backend, which produces none.
+        let output = self.app.core().session_output(id, 8192);
+        let output_pane = v_flex().gap_1().child(section_label("Output")).child(
+            div()
+                .w_full()
+                .p_2()
+                .rounded_md()
+                .bg(gpui::rgba(0x00000040))
+                .font_family("monospace")
+                .text_xs()
+                .child(if output.is_empty() {
+                    "— no captured output —".to_string()
+                } else {
+                    output
+                }),
+        );
+
+        card()
+            .gap_4()
+            .child(header)
+            .child(controls)
+            .child(send_row)
+            .child(board_el)
+            .child(tele)
+            .child(output_pane)
     }
 
     fn render_discover(&self) -> impl IntoElement {
@@ -528,6 +712,11 @@ fn screen(title: &str, subtitle: &str) -> gpui::Div {
             .child(div().text_xl().font_semibold().child(title.to_string()))
             .child(div().text_sm().opacity(0.6).child(subtitle.to_string())),
     )
+}
+
+/// A small section heading.
+fn section_label(text: &str) -> impl IntoElement {
+    div().font_semibold().text_sm().child(text.to_string())
 }
 
 /// A card surface.
