@@ -19,8 +19,9 @@ use tokio::runtime::Handle;
 
 use daedalus_app::{App, AppQuery, Command};
 use daedalus_proto::{
-    ArtifactRef, BackendKind, Capabilities, InvocationSpec, Objective, ObjectiveId, Origin,
-    SessionId, SessionStatus, StartSessionRequest, TaskStatus, ToolDef, ToolId, WorktreeRef,
+    ArtifactRef, Availability, BackendKind, Capabilities, DiscoveredSession, InvocationSpec,
+    Objective, ObjectiveId, Origin, SessionId, SessionStatus, StartSessionRequest, TaskStatus,
+    ToolDef, ToolId, WorktreeRef,
 };
 
 use crate::app::{NavItem, StatusCounts};
@@ -207,14 +208,26 @@ struct AppRoot {
     start_backend: BackendKind,
     // Tool-form toggle.
     tool_accepts_input: bool,
+    // Latest discovered sessions (refreshed on the timer via the tokio runtime).
+    discovered: Vec<DiscoveredSession>,
     focus_handle: FocusHandle,
 }
 
 impl AppRoot {
     fn new(app: App, handle: Handle, inputs: Inputs, cx: &mut Context<Self>) -> Self {
-        // Refresh live state ~2×/sec so backend/task changes appear without polling.
+        // Refresh live state ~2×/sec: re-poll discovery on the tokio runtime, then notify.
+        let app_bg = app.clone();
+        let handle_bg = handle.clone();
         cx.spawn(async move |this, cx| loop {
-            let _ = this.update(cx, |_, cx| cx.notify());
+            let a = app_bg.clone();
+            let discovered = handle_bg
+                .spawn(async move { a.core().discovered().await })
+                .await
+                .unwrap_or_default();
+            let _ = this.update(cx, |this, cx| {
+                this.discovered = discovered;
+                cx.notify();
+            });
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(500))
                 .await;
@@ -231,6 +244,7 @@ impl AppRoot {
             start_origin: Origin::Fresh,
             start_backend: BackendKind::Fake,
             tool_accepts_input: true,
+            discovered: Vec::new(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -378,7 +392,7 @@ impl AppRoot {
             View::Session(_) => self.render_sessions(cx).into_any_element(),
             View::Nav(NavItem::Tasks) => self.render_tasks().into_any_element(),
             View::Nav(NavItem::Fleet) => self.render_sessions(cx).into_any_element(),
-            View::Nav(NavItem::Discover) => self.render_discover().into_any_element(),
+            View::Nav(NavItem::Discover) => self.render_discover(cx).into_any_element(),
             View::Nav(NavItem::Tools) => self.render_tools(cx).into_any_element(),
             View::Nav(NavItem::Backends) => self.render_environments().into_any_element(),
             View::Nav(NavItem::Settings) => self.render_settings(cx).into_any_element(),
@@ -798,14 +812,60 @@ impl AppRoot {
         screen("Tasks", "What every agent is working on, by task").child(columns)
     }
 
-    fn render_discover(&self) -> impl IntoElement {
+    fn render_discover(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette;
+        let mut list = v_flex().gap_2().w_full();
+        if self.discovered.is_empty() {
+            list = list.child(empty("No sessions discovered on local / mDNS sources."));
+        }
+        for d in &self.discovered {
+            let tone = if d.source_availability == Availability::Unavailable {
+                StatusTone::Unreachable
+            } else {
+                StatusTone::Running
+            };
+            let mut row = h_flex()
+                .items_center()
+                .gap_3()
+                .child(status_pill(p, tone))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .gap_0()
+                        .child(div().font_semibold().child(d.host_label.clone()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .opacity(0.6)
+                                .child(format!("{:?} · {}", d.kind, d.zellij_session)),
+                        ),
+                );
+            if d.attachable {
+                let did = d.id.clone();
+                row = row.child(
+                    Button::new(SharedString::from(format!("conn-{}", d.id.identity.0)))
+                        .primary()
+                        .label("Connect")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dispatch(Command::ConnectDiscovered(did.clone()));
+                            cx.notify();
+                        })),
+                );
+            } else {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .opacity(0.6)
+                        .child(d.attach_reason.clone().unwrap_or_default()),
+                );
+            }
+            list = list.child(card().child(row));
+        }
         screen(
             "Discover",
             "Sessions across local, mDNS, and tunneled hosts",
         )
-        .child(empty(
-            "No discovery source configured (the fake backend is local-only).",
-        ))
+        .child(list)
     }
 
     fn render_tools(&self, cx: &mut Context<Self>) -> impl IntoElement {

@@ -23,6 +23,7 @@ use daedalus_backend_fake::FakeBackend;
 use daedalus_backend_macos::MacosBackend;
 use daedalus_backend_workshop::WorkshopBackend;
 use daedalus_core::{BackendRegistry, Core, CoreConfig, Store};
+use daedalus_discovery::{DiscoveryCoordinator, LocalSource, MdnsSource};
 use daedalus_proto::BackendKind;
 use daedalus_zellij::InMemoryTerminal;
 
@@ -38,11 +39,17 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
     ];
     let registry = BackendRegistry::new(backends);
     let terminal = Arc::new(InMemoryTerminal::new());
+    // Discover sessions on the local host (zellij) and the LAN (mDNS). Tunnel sources are
+    // added when the operator configures them.
+    let discovery = Arc::new(DiscoveryCoordinator::new(vec![
+        Box::new(LocalSource::new()),
+        Box::new(MdnsSource::new()),
+    ]));
     let core = Arc::new(Core::new(
         store,
         registry,
         terminal,
-        None,
+        Some(discovery),
         CoreConfig::default(),
     ));
     Ok(App::new(core))

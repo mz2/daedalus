@@ -26,6 +26,7 @@ daedalus-backend-fake = { workspace = true }
 daedalus-backend-macos = { workspace = true }
 daedalus-backend-workshop = { workspace = true }
 daedalus-zellij = { workspace = true }
+daedalus-discovery = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

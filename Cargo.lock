@@ -1463,6 +1463,7 @@ dependencies = [
  "daedalus-backend-macos",
  "daedalus-backend-workshop",
  "daedalus-core",
+ "daedalus-discovery",
  "daedalus-proto",
  "daedalus-tests",
  "daedalus-zellij",
