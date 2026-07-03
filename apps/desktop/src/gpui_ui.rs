@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_component::sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem};
 use gpui_component::{button::Button, button::ButtonVariants};
-use gpui_component::{h_flex, v_flex, Root, StyledExt, TitleBar};
+use gpui_component::{h_flex, v_flex, IconName, Root, StyledExt, TitleBar};
 use gpui_platform::application;
 use tokio::runtime::Handle;
 
@@ -44,47 +44,49 @@ pub fn run(app: App, handle: Handle) {
     let tasks_path = tasks_path.to_string_lossy().into_owned();
 
     let launched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        application().run(move |cx: &mut GpuiApp| {
-            gpui_component::init(cx);
-            // Dark by default (the locked design), with the platform-native accent tinted in
-            // (Ubuntu orange on Linux / warm amber on macOS) so primary buttons + active nav
-            // match `design/`.
-            gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
-            let accent: gpui::Hsla = col(crate::theme::Skin::from_host_os().accent()).into();
-            let on_accent: gpui::Hsla = gpui::rgb(0xffffff).into();
-            {
-                let theme = gpui_component::Theme::global_mut(cx);
-                theme.primary = accent;
-                theme.primary_foreground = on_accent;
-                theme.sidebar_primary = accent;
-                theme.sidebar_primary_foreground = on_accent;
-            }
+        application()
+            .with_assets(gpui_component_assets::Assets)
+            .run(move |cx: &mut GpuiApp| {
+                gpui_component::init(cx);
+                // Dark by default (the locked design), with the platform-native accent tinted in
+                // (Ubuntu orange on Linux / warm amber on macOS) so primary buttons + active nav
+                // match `design/`.
+                gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+                let accent: gpui::Hsla = col(crate::theme::Skin::from_host_os().accent()).into();
+                let on_accent: gpui::Hsla = gpui::rgb(0xffffff).into();
+                {
+                    let theme = gpui_component::Theme::global_mut(cx);
+                    theme.primary = accent;
+                    theme.primary_foreground = on_accent;
+                    theme.sidebar_primary = accent;
+                    theme.sidebar_primary_foreground = on_accent;
+                }
 
-            let bounds = Bounds::centered(None, gpui::size(px(1240.0), px(820.0)), cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitleBar::title_bar_options()),
-                window_min_size: Some(gpui::Size {
-                    width: px(760.0),
-                    height: px(480.0),
-                }),
-                kind: WindowKind::Normal,
-                #[cfg(target_os = "linux")]
-                window_background: gpui::WindowBackgroundAppearance::Transparent,
-                #[cfg(target_os = "linux")]
-                window_decorations: Some(gpui::WindowDecorations::Client),
-                ..Default::default()
-            };
+                let bounds = Bounds::centered(None, gpui::size(px(1240.0), px(820.0)), cx);
+                let options = WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitleBar::title_bar_options()),
+                    window_min_size: Some(gpui::Size {
+                        width: px(760.0),
+                        height: px(480.0),
+                    }),
+                    kind: WindowKind::Normal,
+                    #[cfg(target_os = "linux")]
+                    window_background: gpui::WindowBackgroundAppearance::Transparent,
+                    #[cfg(target_os = "linux")]
+                    window_decorations: Some(gpui::WindowDecorations::Client),
+                    ..Default::default()
+                };
 
-            cx.open_window(options, |window, cx| {
-                let root = cx.new(|cx| {
-                    AppRoot::new(app.clone(), handle.clone(), tool, tasks_path.clone(), cx)
-                });
-                cx.new(|cx| Root::new(root, window, cx))
-            })
-            .expect("open window");
-            cx.activate(true);
-        });
+                cx.open_window(options, |window, cx| {
+                    let root = cx.new(|cx| {
+                        AppRoot::new(app.clone(), handle.clone(), tool, tasks_path.clone(), cx)
+                    });
+                    cx.new(|cx| Root::new(root, window, cx))
+                })
+                .expect("open window");
+                cx.activate(true);
+            });
     }));
 
     if launched.is_err() {
@@ -260,17 +262,18 @@ impl AppRoot {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let nav = [
-            (NavItem::Tasks, "Tasks"),
-            (NavItem::Fleet, "Sessions"),
-            (NavItem::Discover, "Discover"),
-            (NavItem::Tools, "Tools"),
-            (NavItem::Backends, "Environments"),
-            (NavItem::Settings, "Settings"),
+            (NavItem::Tasks, "Tasks", IconName::LayoutDashboard),
+            (NavItem::Fleet, "Sessions", IconName::SquareTerminal),
+            (NavItem::Discover, "Discover", IconName::Globe),
+            (NavItem::Tools, "Tools", IconName::Bot),
+            (NavItem::Backends, "Environments", IconName::Folder),
+            (NavItem::Settings, "Settings", IconName::Settings),
         ];
         let items: Vec<SidebarMenuItem> = nav
             .into_iter()
-            .map(|(item, label)| {
+            .map(|(item, label, icon)| {
                 SidebarMenuItem::new(label)
+                    .icon(icon)
                     .active(self.active == item)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.active = item;

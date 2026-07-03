@@ -15,7 +15,7 @@ path = "src/main.rs"
 # The GPUI renderer is a heavy git dependency that needs a GPU/display and per-platform
 # validation (research R-UI). It is opt-in so the headless build/test flow stays fast.
 default = []
-gpui = ["dep:gpui", "dep:gpui_platform", "dep:gpui-component"]
+gpui = ["dep:gpui", "dep:gpui_platform", "dep:gpui-component", "dep:gpui-component-assets"]
 
 [dependencies]
 daedalus-proto = { workspace = true }
@@ -35,6 +35,7 @@ tracing-subscriber = { workspace = true }
 # targets so there is a single gpui version. Heavy: needs a GPU/display + system libs.
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", optional = true }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git", optional = true }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component.git", optional = true }
 
 # The platform launcher (`application()`); platform features are target-specific.
 [target.'cfg(target_os = "linux")'.dependencies]

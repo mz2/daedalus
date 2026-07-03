@@ -1468,6 +1468,7 @@ dependencies = [
  "daedalus-zellij",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui_platform",
  "tokio",
  "tracing",
