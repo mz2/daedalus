@@ -56,7 +56,7 @@ impl Core {
             AgentSignal::Crashed => Some("agent crashed or exited abnormally".to_string()),
             AgentSignal::NoProgress => Some(format!(
                 "no progress for {}s",
-                self.config.stall_interval_secs
+                self.config.lock().expect("poisoned").stall_interval_secs
             )),
             _ => None,
         };

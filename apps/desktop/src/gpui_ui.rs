@@ -1,8 +1,10 @@
 //! The GPUI render loop (only compiled with `--features gpui`), built on the
-//! **gpui-component** widget library so the surface matches the locked design (`design/`):
-//! a client-side title bar, a sidebar of navigation + backends, and nav-switched screens
-//! (Tasks board, Sessions, Discover, Tools, Environments, Settings). It needs a GPU/display
-//! (research R-UI); live state refreshes on a timer and commands run on the tokio runtime.
+//! **gpui-component** widget library so the surface matches the locked design (`design/`).
+//!
+//! It wires the operator-facing capabilities into the window: a Start-session flow, session
+//! monitoring + control + send-input, tool registration, fleet/tasks views, and settings —
+//! all driven through the `daedalus_app::App` command/query API. Needs a GPU/display
+//! (research R-UI); live state refreshes on a timer, commands run on the tokio runtime.
 
 use gpui::{
     div, prelude::*, px, App as GpuiApp, Bounds, Context, Entity, FocusHandle, Focusable, Rgba,
@@ -18,7 +20,7 @@ use tokio::runtime::Handle;
 use daedalus_app::{App, AppQuery, Command};
 use daedalus_proto::{
     ArtifactRef, BackendKind, Capabilities, InvocationSpec, Objective, ObjectiveId, Origin,
-    SessionId, SessionStatus, TaskStatus, ToolDef, ToolId,
+    SessionId, SessionStatus, StartSessionRequest, TaskStatus, ToolDef, ToolId, WorktreeRef,
 };
 
 use crate::app::{NavItem, StatusCounts};
@@ -34,24 +36,43 @@ fn col(c: Color) -> Rgba {
     gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32))
 }
 
+/// What the content area is showing.
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    Nav(NavItem),
+    Start,
+    Session(SessionId),
+}
+
+/// All the text-input entities the forms use (created once, with the window in scope).
+struct Inputs {
+    send: Entity<InputState>,
+    objective: Entity<InputState>,
+    tasks_path: Entity<InputState>,
+    worktree: Entity<InputState>,
+    tool_name: Entity<InputState>,
+    tool_program: Entity<InputState>,
+    tool_args: Entity<InputState>,
+    concurrency: Entity<InputState>,
+    stall: Entity<InputState>,
+}
+
 /// Open the Daedalus window and run the GPUI event loop (blocks the main thread).
 pub fn run(app: App, handle: Handle) {
-    let tool = ensure_tool(&app);
-    let tasks_path = std::env::temp_dir().join("daedalus-sample-tasks.md");
+    ensure_tool(&app);
+    let sample_tasks = std::env::temp_dir().join("daedalus-sample-tasks.md");
     let _ = std::fs::write(
-        &tasks_path,
+        &sample_tasks,
         "- [x] T001 Provision environment\n- [ ] T002 Implement feature\n- [ ] T003 Run tests\n",
     );
-    let tasks_path = tasks_path.to_string_lossy().into_owned();
+    let sample_tasks = sample_tasks.to_string_lossy().into_owned();
 
     let launched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         application()
             .with_assets(gpui_component_assets::Assets)
             .run(move |cx: &mut GpuiApp| {
                 gpui_component::init(cx);
-                // Dark by default (the locked design), with the platform-native accent tinted in
-                // (Ubuntu orange on Linux / warm amber on macOS) so primary buttons + active nav
-                // match `design/`.
+                // Dark by default (the locked design), with the platform accent tinted in.
                 gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
                 let accent: gpui::Hsla = col(crate::theme::Skin::from_host_os().accent()).into();
                 let on_accent: gpui::Hsla = gpui::rgb(0xffffff).into();
@@ -68,8 +89,8 @@ pub fn run(app: App, handle: Handle) {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitleBar::title_bar_options()),
                     window_min_size: Some(gpui::Size {
-                        width: px(760.0),
-                        height: px(480.0),
+                        width: px(820.0),
+                        height: px(520.0),
                     }),
                     kind: WindowKind::Normal,
                     #[cfg(target_os = "linux")]
@@ -79,20 +100,56 @@ pub fn run(app: App, handle: Handle) {
                     ..Default::default()
                 };
 
-                cx.open_window(options, |window, cx| {
-                    let input = cx.new(|cx| {
-                        InputState::new(window, cx).placeholder("Send input to the agent…")
+                let app = app.clone();
+                let handle = handle.clone();
+                let sample_tasks = sample_tasks.clone();
+                cx.open_window(options, move |window, cx| {
+                    let inputs = Inputs {
+                        send: cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("Send input to the agent…")
+                        }),
+                        objective: cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("Objective description")
+                        }),
+                        tasks_path: cx
+                            .new(|cx| InputState::new(window, cx).placeholder("Path to tasks.md")),
+                        worktree: cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("Worktree path (pre-existing)")
+                        }),
+                        tool_name: cx
+                            .new(|cx| InputState::new(window, cx).placeholder("Tool name")),
+                        tool_program: cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("Program (e.g. bash)")
+                        }),
+                        tool_args: cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("Args (space-separated)")
+                        }),
+                        concurrency: cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder("Concurrency limit (blank = unlimited)")
+                        }),
+                        stall: cx.new(|cx| {
+                            InputState::new(window, cx).placeholder("Stall interval (seconds)")
+                        }),
+                    };
+                    // Pre-fill sensible defaults.
+                    inputs
+                        .objective
+                        .update(cx, |s, cx| s.set_value("Demo objective", window, cx));
+                    inputs
+                        .tasks_path
+                        .update(cx, |s, cx| s.set_value(sample_tasks.clone(), window, cx));
+                    let cfg = app.core().config();
+                    inputs.stall.update(cx, |s, cx| {
+                        s.set_value(cfg.stall_interval_secs.to_string(), window, cx)
                     });
-                    let root = cx.new(|cx| {
-                        AppRoot::new(
-                            app.clone(),
-                            handle.clone(),
-                            tool,
-                            tasks_path.clone(),
-                            input,
-                            cx,
-                        )
-                    });
+                    if let Some(limit) = cfg.concurrency_limit {
+                        inputs
+                            .concurrency
+                            .update(cx, |s, cx| s.set_value(limit.to_string(), window, cx));
+                    }
+
+                    let root = cx.new(|cx| AppRoot::new(app.clone(), handle.clone(), inputs, cx));
                     cx.new(|cx| Root::new(root, window, cx))
                 })
                 .expect("open window");
@@ -112,7 +169,7 @@ pub fn run(app: App, handle: Handle) {
     }
 }
 
-/// Register the demo tool (idempotent — reuses the persisted one by name).
+/// Register the demo tool (idempotent) so the tool picker is never empty.
 fn ensure_tool(app: &App) -> ToolId {
     let def = ToolDef {
         name: "claude".to_string(),
@@ -134,7 +191,7 @@ fn ensure_tool(app: &App) -> ToolId {
             .into_iter()
             .find(|t| t.name == "claude")
             .map(|t| t.id)
-            .expect("demo tool present"),
+            .unwrap_or_default(),
     }
 }
 
@@ -142,24 +199,19 @@ struct AppRoot {
     app: App,
     handle: Handle,
     palette: Palette,
-    active: NavItem,
-    /// When set, the Session detail screen is shown for this session.
-    selected: Option<SessionId>,
-    tool: ToolId,
-    tasks_path: String,
-    input: Entity<InputState>,
+    view: View,
+    inputs: Inputs,
+    // Start-form selections.
+    start_tool: Option<ToolId>,
+    start_origin: Origin,
+    start_backend: BackendKind,
+    // Tool-form toggle.
+    tool_accepts_input: bool,
     focus_handle: FocusHandle,
 }
 
 impl AppRoot {
-    fn new(
-        app: App,
-        handle: Handle,
-        tool: ToolId,
-        tasks_path: String,
-        input: Entity<InputState>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(app: App, handle: Handle, inputs: Inputs, cx: &mut Context<Self>) -> Self {
         // Refresh live state ~2×/sec so backend/task changes appear without polling.
         cx.spawn(async move |this, cx| loop {
             let _ = this.update(cx, |_, cx| cx.notify());
@@ -173,11 +225,12 @@ impl AppRoot {
             app,
             handle,
             palette: Palette::host_default(),
-            active: NavItem::Tasks,
-            selected: None,
-            tool,
-            tasks_path,
-            input,
+            view: View::Nav(NavItem::Tasks),
+            inputs,
+            start_tool: None,
+            start_origin: Origin::Fresh,
+            start_backend: BackendKind::Fake,
+            tool_accepts_input: true,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -191,7 +244,6 @@ impl AppRoot {
         });
     }
 
-    /// Sample a session's resource usage on the tokio runtime (the refresh timer re-reads it).
     fn sample_usage(&self, id: SessionId) {
         let core = self.app.core().clone();
         self.handle.spawn(async move {
@@ -199,21 +251,8 @@ impl AppRoot {
         });
     }
 
-    fn start_request(&self) -> daedalus_proto::StartSessionRequest {
-        daedalus_proto::StartSessionRequest {
-            tool_id: self.tool,
-            objective: Objective {
-                id: ObjectiveId::new(),
-                artifact_ref: ArtifactRef {
-                    root: std::env::temp_dir().to_string_lossy().into_owned(),
-                    tasks_file: self.tasks_path.clone(),
-                },
-                description: "Demo objective".to_string(),
-            },
-            origin: Origin::Fresh,
-            worktree: None,
-            backend: BackendKind::Fake,
-        }
+    fn input_value(&self, e: &Entity<InputState>, cx: &Context<Self>) -> String {
+        e.read(cx).value().trim().to_string()
     }
 }
 
@@ -277,8 +316,7 @@ impl AppRoot {
                         .primary()
                         .label("Start session")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            let req = this.start_request();
-                            this.dispatch(Command::StartSession(req));
+                            this.view = View::Start;
                             cx.notify();
                         })),
                 ),
@@ -294,14 +332,15 @@ impl AppRoot {
             (NavItem::Backends, "Environments", IconName::Folder),
             (NavItem::Settings, "Settings", IconName::Settings),
         ];
+        let active = matches!(self.view, View::Nav(_));
         let items: Vec<SidebarMenuItem> = nav
             .into_iter()
             .map(|(item, label, icon)| {
                 SidebarMenuItem::new(label)
                     .icon(icon)
-                    .active(self.active == item)
+                    .active(active && self.view == View::Nav(item))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.active = item;
+                        this.view = View::Nav(item);
                         cx.notify();
                     }))
             })
@@ -331,76 +370,157 @@ impl AppRoot {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        // A selected session takes over the content area with its detail screen.
-        if let Some(id) = self.selected {
-            if self.app.session(id).is_some() {
-                return self.render_detail(id, cx).into_any_element();
+        match self.view {
+            View::Start => self.render_start(cx).into_any_element(),
+            View::Session(id) if self.app.session(id).is_some() => {
+                self.render_detail(id, cx).into_any_element()
             }
-        }
-        match self.active {
-            NavItem::Tasks => self.render_tasks().into_any_element(),
-            NavItem::Fleet => self.render_sessions(cx).into_any_element(),
-            NavItem::Discover => self.render_discover().into_any_element(),
-            NavItem::Tools => self.render_tools().into_any_element(),
-            NavItem::Backends => self.render_environments().into_any_element(),
-            NavItem::Settings => self.render_settings().into_any_element(),
+            View::Session(_) => self.render_sessions(cx).into_any_element(),
+            View::Nav(NavItem::Tasks) => self.render_tasks().into_any_element(),
+            View::Nav(NavItem::Fleet) => self.render_sessions(cx).into_any_element(),
+            View::Nav(NavItem::Discover) => self.render_discover().into_any_element(),
+            View::Nav(NavItem::Tools) => self.render_tools(cx).into_any_element(),
+            View::Nav(NavItem::Backends) => self.render_environments().into_any_element(),
+            View::Nav(NavItem::Settings) => self.render_settings(cx).into_any_element(),
         }
     }
 
-    fn render_tasks(&self) -> impl IntoElement {
+    fn render_start(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        // Aggregate every non-terminal session's tasks into kanban columns.
-        let mut cols: [Column; 4] = [
-            (TaskStatus::InProgress, "In progress", Vec::new()),
-            (TaskStatus::Blocked, "Blocked", Vec::new()),
-            (TaskStatus::Todo, "To do", Vec::new()),
-            (TaskStatus::Done, "Done", Vec::new()),
-        ];
-        for s in self.app.fleet() {
-            let _ = self.app.core().refresh_task_board(s.id);
-            for t in self.app.task_board(s.id) {
-                if let Some(c) = cols.iter_mut().find(|c| c.0 == t.status) {
-                    c.2.push((s.tool_name.clone(), t.id.0.clone(), t.description.clone()));
-                }
-            }
+        let tools = self.app.core().list_tools().unwrap_or_default();
+        let selected_tool = self.start_tool.or_else(|| tools.first().map(|t| t.id));
+
+        // Tool picker.
+        let tool_row = h_flex().gap_2().children(tools.into_iter().map(|t| {
+            let id = t.id;
+            let chosen = selected_tool == Some(id);
+            let btn = Button::new(SharedString::from(format!("pick-{id}"))).label(t.name);
+            let btn = if chosen { btn.primary() } else { btn.outline() };
+            btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.start_tool = Some(id);
+                cx.notify();
+            }))
+        }));
+
+        // Origin toggle.
+        let origin_row = h_flex()
+            .gap_2()
+            .child(origin_btn(self, cx, Origin::Fresh, "Fresh"))
+            .child(origin_btn(self, cx, Origin::PreExisting, "Pre-existing"));
+
+        // Backend picker.
+        let mut kinds: Vec<BackendKind> = self
+            .app
+            .core()
+            .backend_registry()
+            .all()
+            .iter()
+            .map(|b| b.kind())
+            .collect();
+        kinds.dedup();
+        let backend_row = h_flex().gap_2().children(kinds.into_iter().map(|k| {
+            let chosen = self.start_backend == k;
+            let btn = Button::new(SharedString::from(format!("bk-{k:?}"))).label(format!("{k:?}"));
+            let btn = if chosen { btn.primary() } else { btn.outline() };
+            btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.start_backend = k;
+                cx.notify();
+            }))
+        }));
+
+        let mut form = v_flex()
+            .gap_3()
+            .child(field("Tool", tool_row))
+            .child(field(
+                "Objective",
+                div().child(Input::new(&self.inputs.objective)),
+            ))
+            .child(field(
+                "Tasks file (tasks.md)",
+                div().child(Input::new(&self.inputs.tasks_path)),
+            ))
+            .child(field("Environment", origin_row));
+        if self.start_origin == Origin::PreExisting {
+            form = form.child(field(
+                "Worktree",
+                div().child(Input::new(&self.inputs.worktree)),
+            ));
         }
+        form = form.child(field("Backend", backend_row)).child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("do-start")
+                        .primary()
+                        .label("Start session")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.submit_start(cx);
+                        })),
+                )
+                .child(
+                    Button::new("cancel-start")
+                        .ghost()
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.view = View::Nav(NavItem::Tasks);
+                            cx.notify();
+                        })),
+                ),
+        );
 
-        let columns = h_flex()
-            .gap_4()
-            .items_start()
-            .w_full()
-            .children(cols.into_iter().map(|(status, label, tasks)| {
-                let tone = StatusTone::from_task(status);
-                v_flex()
-                    .flex_1()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(status_dot(p, tone))
-                            .child(div().font_semibold().child(label.to_string()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .opacity(0.6)
-                                    .child(format!("{}", tasks.len())),
-                            ),
-                    )
-                    .children(tasks.into_iter().map(|(tool, id, desc)| {
-                        card()
-                            .child(div().text_xs().opacity(0.6).child(tool))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(div().font_semibold().text_sm().child(id))
-                                    .child(div().text_sm().child(desc)),
-                            )
-                    }))
-            }));
+        let _ = p;
+        screen(
+            "Start a session",
+            "Select a tool + objective, choose an environment, launch",
+        )
+        .child(card().child(form))
+    }
 
-        screen("Tasks", "What every agent is working on, by task").child(columns)
+    fn submit_start(&mut self, cx: &mut Context<Self>) {
+        let tools = self.app.core().list_tools().unwrap_or_default();
+        let Some(tool_id) = self.start_tool.or_else(|| tools.first().map(|t| t.id)) else {
+            return;
+        };
+        let tasks_file = self.input_value(&self.inputs.tasks_path, cx);
+        if tasks_file.is_empty() {
+            return;
+        }
+        let worktree = if self.start_origin == Origin::PreExisting {
+            let path = self.input_value(&self.inputs.worktree, cx);
+            if path.is_empty() {
+                return;
+            }
+            Some(WorktreeRef {
+                path,
+                branch: "daedalus".to_string(),
+            })
+        } else {
+            None
+        };
+        let req = StartSessionRequest {
+            tool_id,
+            objective: Objective {
+                id: ObjectiveId::new(),
+                artifact_ref: ArtifactRef {
+                    root: std::env::temp_dir().to_string_lossy().into_owned(),
+                    tasks_file,
+                },
+                description: {
+                    let d = self.input_value(&self.inputs.objective, cx);
+                    if d.is_empty() {
+                        "Objective".to_string()
+                    } else {
+                        d
+                    }
+                },
+            },
+            origin: self.start_origin,
+            worktree,
+            backend: self.start_backend,
+        };
+        self.dispatch(Command::StartSession(req));
+        self.view = View::Nav(NavItem::Fleet);
+        cx.notify();
     }
 
     fn render_sessions(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -469,9 +589,10 @@ impl AppRoot {
             );
             row = row.child(
                 Button::new(SharedString::from(format!("open-{id}")))
+                    .outline()
                     .label("Open")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected = Some(id);
+                        this.view = View::Session(id);
                         this.sample_usage(id);
                         cx.notify();
                     })),
@@ -490,7 +611,6 @@ impl AppRoot {
         let s = &detail.session;
         let tone = StatusTone::from_session(s.status);
 
-        // Header: back + tool/objective + status pill.
         let header = h_flex()
             .items_center()
             .gap_3()
@@ -499,7 +619,7 @@ impl AppRoot {
                     .ghost()
                     .label("← Back")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.selected = None;
+                        this.view = View::Nav(NavItem::Fleet);
                         cx.notify();
                     })),
             )
@@ -512,7 +632,6 @@ impl AppRoot {
                     .child(detail.objective.description.clone()),
             );
 
-        // Lifecycle controls.
         let mut controls = h_flex().gap_2();
         if s.status == SessionStatus::AwaitingConfirmation {
             controls = controls.child(
@@ -536,28 +655,29 @@ impl AppRoot {
         controls = controls.child(Button::new("d-clean").ghost().label("Clean up").on_click(
             cx.listener(move |this, _, _, cx| {
                 this.dispatch(Command::CleanUp(id));
-                this.selected = None;
+                this.view = View::Nav(NavItem::Fleet);
                 cx.notify();
             }),
         ));
 
-        // Send-input row (disabled with a reason when the tool doesn't accept input).
         let accepts = s.accepts_input;
         let send_row = h_flex()
             .gap_2()
             .items_center()
-            .child(div().flex_1().child(Input::new(&self.input)))
+            .child(div().flex_1().child(Input::new(&self.inputs.send)))
             .child(if accepts {
                 Button::new("send")
                     .label("Send input")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        let text = this.input.read(cx).value().to_string();
+                        let text = this.input_value(&this.inputs.send, cx);
                         if !text.is_empty() {
                             this.dispatch(Command::SendInput {
                                 session: id,
                                 data: format!("{text}\n").into_bytes().into(),
                             });
-                            this.input.update(cx, |st, cx| st.set_value("", window, cx));
+                            this.inputs
+                                .send
+                                .update(cx, |st, cx| st.set_value("", window, cx));
                             cx.notify();
                         }
                     }))
@@ -565,7 +685,6 @@ impl AppRoot {
                 Button::new("send").label("Send input (unsupported)")
             });
 
-        // Task board.
         let board = self.app.task_board(id);
         let mut board_el = v_flex().gap_1().child(section_label("Task board"));
         if board.is_empty() {
@@ -583,7 +702,6 @@ impl AppRoot {
             );
         }
 
-        // Telemetry.
         let mut tele = h_flex().gap_4().child(section_label("Telemetry"));
         for m in self.app.resource_usage(id) {
             tele = tele.child(
@@ -599,7 +717,6 @@ impl AppRoot {
             );
         }
 
-        // Captured output (redacted). Empty for the fake backend, which produces none.
         let output = self.app.core().session_output(id, 8192);
         let output_pane = v_flex().gap_1().child(section_label("Output")).child(
             div()
@@ -626,18 +743,119 @@ impl AppRoot {
             .child(output_pane)
     }
 
+    fn render_tasks(&self) -> impl IntoElement {
+        let p = self.palette;
+        let mut cols: [Column; 4] = [
+            (TaskStatus::InProgress, "In progress", Vec::new()),
+            (TaskStatus::Blocked, "Blocked", Vec::new()),
+            (TaskStatus::Todo, "To do", Vec::new()),
+            (TaskStatus::Done, "Done", Vec::new()),
+        ];
+        for s in self.app.fleet() {
+            let _ = self.app.core().refresh_task_board(s.id);
+            for t in self.app.task_board(s.id) {
+                if let Some(c) = cols.iter_mut().find(|c| c.0 == t.status) {
+                    c.2.push((s.tool_name.clone(), t.id.0.clone(), t.description.clone()));
+                }
+            }
+        }
+
+        let columns = h_flex()
+            .gap_4()
+            .items_start()
+            .w_full()
+            .children(cols.into_iter().map(|(status, label, tasks)| {
+                let tone = StatusTone::from_task(status);
+                v_flex()
+                    .flex_1()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(status_dot(p, tone))
+                            .child(div().font_semibold().child(label.to_string()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .opacity(0.6)
+                                    .child(format!("{}", tasks.len())),
+                            ),
+                    )
+                    .children(tasks.into_iter().map(|(tool, id, desc)| {
+                        card()
+                            .child(div().text_xs().opacity(0.6).child(tool))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(div().font_semibold().text_sm().child(id))
+                                    .child(div().text_sm().child(desc)),
+                            )
+                    }))
+            }));
+
+        screen("Tasks", "What every agent is working on, by task").child(columns)
+    }
+
     fn render_discover(&self) -> impl IntoElement {
         screen(
             "Discover",
             "Sessions across local, mDNS, and tunneled hosts",
         )
         .child(empty(
-            "No sessions discovered (the fake backend is local-only).",
+            "No discovery source configured (the fake backend is local-only).",
         ))
     }
 
-    fn render_tools(&self) -> impl IntoElement {
-        let mut list = v_flex().gap_2().w_full();
+    fn render_tools(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Registration form.
+        let accepts = self.tool_accepts_input;
+        let form = card()
+            .gap_2()
+            .child(section_label("Register a tool"))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(field(
+                        "Name",
+                        div().child(Input::new(&self.inputs.tool_name)),
+                    ))
+                    .child(field(
+                        "Program",
+                        div().child(Input::new(&self.inputs.tool_program)),
+                    ))
+                    .child(field(
+                        "Args",
+                        div().child(Input::new(&self.inputs.tool_args)),
+                    ))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child({
+                                let b = Button::new("accepts").label("Accepts input");
+                                let b = if accepts { b.primary() } else { b.outline() };
+                                b.on_click(cx.listener(|this, _, _, cx| {
+                                    this.tool_accepts_input = !this.tool_accepts_input;
+                                    cx.notify();
+                                }))
+                            })
+                            .child(
+                                Button::new("do-register")
+                                    .primary()
+                                    .label("Register")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.submit_tool(window, cx);
+                                    })),
+                            ),
+                    ),
+            );
+
+        let mut list = v_flex()
+            .gap_2()
+            .w_full()
+            .child(section_label("Registered tools"));
         for t in self.app.core().list_tools().unwrap_or_default() {
             let mut cmd = t.invocation.program.clone();
             for a in &t.invocation.args {
@@ -666,7 +884,42 @@ impl AppRoot {
                 ),
             );
         }
-        screen("Tools", "Registered agentic tools").child(list)
+
+        screen("Tools", "Registered agentic tools")
+            .child(form)
+            .child(list)
+    }
+
+    fn submit_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.input_value(&self.inputs.tool_name, cx);
+        let program = self.input_value(&self.inputs.tool_program, cx);
+        if name.is_empty() || program.is_empty() {
+            return;
+        }
+        let args = self
+            .input_value(&self.inputs.tool_args, cx)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        self.dispatch(Command::RegisterTool(ToolDef {
+            name,
+            invocation: InvocationSpec {
+                program,
+                args,
+                env: Vec::new(),
+            },
+            capabilities: Capabilities {
+                accepts_interactive_input: self.tool_accepts_input,
+            },
+        }));
+        for e in [
+            &self.inputs.tool_name,
+            &self.inputs.tool_program,
+            &self.inputs.tool_args,
+        ] {
+            e.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+        cx.notify();
     }
 
     fn render_environments(&self) -> impl IntoElement {
@@ -686,25 +939,77 @@ impl AppRoot {
         screen("Environments", "Sandbox backends and availability").child(list)
     }
 
-    fn render_settings(&self) -> impl IntoElement {
-        screen("Settings", "Local-first: no open listener by default").child(
-            card().child(
-                v_flex()
-                    .gap_1()
-                    .child(div().child("Concurrency limit: unlimited"))
-                    .child(div().child("Stall interval: 120s"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .opacity(0.6)
-                            .child("Remote reach only over operator-established tunnels."),
-                    ),
-            ),
-        )
+    fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let form = card().gap_2().child(section_label("Configuration")).child(
+            v_flex()
+                .gap_2()
+                .child(field(
+                    "Concurrency limit",
+                    div().child(Input::new(&self.inputs.concurrency)),
+                ))
+                .child(field(
+                    "Stall interval (s)",
+                    div().child(Input::new(&self.inputs.stall)),
+                ))
+                .child(
+                    Button::new("save-settings")
+                        .primary()
+                        .label("Save")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let limit = this.input_value(&this.inputs.concurrency, cx);
+                            let limit = if limit.is_empty() {
+                                None
+                            } else {
+                                limit.parse::<usize>().ok()
+                            };
+                            this.app.core().set_concurrency_limit(limit);
+                            if let Ok(secs) =
+                                this.input_value(&this.inputs.stall, cx).parse::<u64>()
+                            {
+                                this.app.core().set_stall_interval(secs);
+                            }
+                            cx.notify();
+                        })),
+                ),
+        );
+        screen("Settings", "Local-first: no open listener by default")
+            .child(form)
+            .child(
+                card().child(
+                    div()
+                        .text_xs()
+                        .opacity(0.6)
+                        .child("Remote reach only over operator-established tunnels."),
+                ),
+            )
     }
 }
 
-/// A screen scaffold: heading + subtitle + a scrollable content area.
+/// A labelled form field: label above, control below.
+fn field(label: &str, control: impl IntoElement) -> impl IntoElement {
+    v_flex()
+        .gap_1()
+        .child(div().text_xs().opacity(0.6).child(label.to_string()))
+        .child(control)
+}
+
+/// An origin toggle button for the Start form.
+fn origin_btn(
+    root: &AppRoot,
+    cx: &mut Context<AppRoot>,
+    origin: Origin,
+    label: &str,
+) -> impl IntoElement {
+    let chosen = root.start_origin == origin;
+    let b = Button::new(SharedString::from(format!("origin-{label}"))).label(label.to_string());
+    let b = if chosen { b.primary() } else { b.outline() };
+    b.on_click(cx.listener(move |this, _, _, cx| {
+        this.start_origin = origin;
+        cx.notify();
+    }))
+}
+
+/// A screen scaffold: heading + subtitle + content area.
 fn screen(title: &str, subtitle: &str) -> gpui::Div {
     v_flex().size_full().gap_4().p_5().child(
         v_flex()

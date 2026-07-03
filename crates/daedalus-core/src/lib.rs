@@ -116,7 +116,7 @@ pub struct Core {
     pub(crate) backends: BackendRegistry,
     pub(crate) terminal: Arc<dyn TerminalAttach>,
     pub(crate) discovery: Option<Arc<DiscoveryCoordinator>>,
-    pub(crate) config: CoreConfig,
+    pub(crate) config: Mutex<CoreConfig>,
     pub(crate) events: broadcast::Sender<AppEvent>,
     pub(crate) runtime: Mutex<HashMap<SessionId, RuntimeHandle>>,
     pub(crate) delivered_input: Mutex<HashMap<SessionId, Vec<Bytes>>>,
@@ -139,11 +139,27 @@ impl Core {
             backends,
             terminal,
             discovery,
-            config,
+            config: Mutex::new(config),
             events,
             runtime: Mutex::new(HashMap::new()),
             delivered_input: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Current core configuration snapshot.
+    #[must_use]
+    pub fn config(&self) -> CoreConfig {
+        self.config.lock().expect("poisoned").clone()
+    }
+
+    /// Update the concurrency limit at runtime (FR-026).
+    pub fn set_concurrency_limit(&self, limit: Option<usize>) {
+        self.config.lock().expect("poisoned").concurrency_limit = limit;
+    }
+
+    /// Update the stall interval (seconds) at runtime (FR-020).
+    pub fn set_stall_interval(&self, secs: u64) {
+        self.config.lock().expect("poisoned").stall_interval_secs = secs;
     }
 
     /// Subscribe to the push event stream (drives live UI updates without polling).

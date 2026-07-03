@@ -27,7 +27,7 @@ impl Core {
         })?;
 
         // 2. Enforce the configurable concurrency limit (FR-026).
-        if let Some(limit) = self.config.concurrency_limit {
+        if let Some(limit) = self.config.lock().expect("poisoned").concurrency_limit {
             let active = self
                 .store
                 .list_sessions()?
