@@ -7,14 +7,16 @@
 //! (research R-UI); live state refreshes on a timer, commands run on the tokio runtime.
 
 use gpui::{
-    div, prelude::*, px, App as GpuiApp, Bounds, Context, Entity, FocusHandle, Focusable, Rgba,
-    SharedString, Window, WindowBounds, WindowKind, WindowOptions,
+    div, prelude::*, px, App as GpuiApp, Bounds, Context, Edges, Entity, FocusHandle, Focusable,
+    Rgba, SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem};
 use gpui_component::{button::Button, button::ButtonVariants};
 use gpui_component::{h_flex, v_flex, IconName, Root, StyledExt, TitleBar};
 use gpui_platform::application;
+use gpui_terminal::{ColorPalette, TerminalConfig, TerminalView};
+use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use tokio::runtime::Handle;
 
 use daedalus_app::{App, AppQuery, Command};
@@ -210,6 +212,11 @@ struct AppRoot {
     tool_accepts_input: bool,
     // Latest discovered sessions (refreshed on the timer via the tokio runtime).
     discovered: Vec<DiscoveredSession>,
+    // The embedded terminal for the open session (a real PTY via a shell); the PTY handles
+    // are held so the pty/child stay alive while the terminal is shown.
+    terminal: Option<Entity<TerminalView>>,
+    pty: Option<PtyPair>,
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     focus_handle: FocusHandle,
 }
 
@@ -245,7 +252,32 @@ impl AppRoot {
             start_backend: BackendKind::Fake,
             tool_accepts_input: true,
             discovered: Vec::new(),
+            terminal: None,
+            pty: None,
+            child: None,
             focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Open a session's detail and start an embedded terminal (a shell in a real PTY).
+    fn open_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.view = View::Session(id);
+        self.sample_usage(id);
+        self.close_terminal();
+        if let Some((view, pair, child)) = spawn_terminal(cx) {
+            self.terminal = Some(view);
+            self.pty = Some(pair);
+            self.child = Some(child);
+        }
+        cx.notify();
+    }
+
+    /// Tear down the embedded terminal (closing the PTY exits its shell).
+    fn close_terminal(&mut self) {
+        self.terminal = None;
+        self.pty = None;
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
         }
     }
 
@@ -606,9 +638,7 @@ impl AppRoot {
                     .outline()
                     .label("Open")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.view = View::Session(id);
-                        this.sample_usage(id);
-                        cx.notify();
+                        this.open_session(id, cx);
                     })),
             );
 
@@ -633,6 +663,7 @@ impl AppRoot {
                     .ghost()
                     .label("← Back")
                     .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_terminal();
                         this.view = View::Nav(NavItem::Fleet);
                         cx.notify();
                     })),
@@ -669,6 +700,7 @@ impl AppRoot {
         controls = controls.child(Button::new("d-clean").ghost().label("Clean up").on_click(
             cx.listener(move |this, _, _, cx| {
                 this.dispatch(Command::CleanUp(id));
+                this.close_terminal();
                 this.view = View::Nav(NavItem::Fleet);
                 cx.notify();
             }),
@@ -731,21 +763,34 @@ impl AppRoot {
             );
         }
 
-        let output = self.app.core().session_output(id, 8192);
-        let output_pane = v_flex().gap_1().child(section_label("Output")).child(
-            div()
-                .w_full()
-                .p_2()
-                .rounded_md()
-                .bg(gpui::rgba(0x00000040))
-                .font_family("monospace")
-                .text_xs()
-                .child(if output.is_empty() {
-                    "— no captured output —".to_string()
-                } else {
-                    output
-                }),
-        );
+        // Terminal pane: a live embedded terminal when open, else the captured-output tail.
+        let terminal_pane = if let Some(term) = &self.terminal {
+            v_flex().gap_1().child(section_label("Terminal")).child(
+                div()
+                    .w_full()
+                    .h(px(380.0))
+                    .rounded_md()
+                    .overflow_hidden()
+                    .bg(gpui::rgba(0x000000a0))
+                    .child(term.clone()),
+            )
+        } else {
+            let output = self.app.core().session_output(id, 8192);
+            v_flex().gap_1().child(section_label("Output")).child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .rounded_md()
+                    .bg(gpui::rgba(0x00000040))
+                    .font_family("monospace")
+                    .text_xs()
+                    .child(if output.is_empty() {
+                        "— no captured output —".to_string()
+                    } else {
+                        output
+                    }),
+            )
+        };
 
         card()
             .gap_4()
@@ -754,7 +799,7 @@ impl AppRoot {
             .child(send_row)
             .child(board_el)
             .child(tele)
-            .child(output_pane)
+            .child(terminal_pane)
     }
 
     fn render_tasks(&self) -> impl IntoElement {
@@ -1043,6 +1088,41 @@ impl AppRoot {
                 ),
             )
     }
+}
+
+/// Start a real PTY running a shell and wrap it in a terminal view.
+fn spawn_terminal(
+    cx: &mut Context<AppRoot>,
+) -> Option<(
+    Entity<TerminalView>,
+    PtyPair,
+    Box<dyn portable_pty::Child + Send + Sync>,
+)> {
+    let (cols, rows) = (100usize, 30usize);
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: rows as u16,
+            cols: cols as u16,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .ok()?;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+    let child = pair.slave.spawn_command(CommandBuilder::new(shell)).ok()?;
+    let reader = pair.master.try_clone_reader().ok()?;
+    let writer = pair.master.take_writer().ok()?;
+    let config = TerminalConfig {
+        cols,
+        rows,
+        font_family: "JetBrains Mono".to_string(),
+        font_size: px(13.0),
+        line_height_multiplier: 1.0,
+        scrollback: 5000,
+        padding: Edges::all(px(6.0)),
+        colors: ColorPalette::default(),
+    };
+    let view = cx.new(|cx| TerminalView::new(writer, reader, config, cx));
+    Some((view, pair, child))
 }
 
 /// A labelled form field: label above, control below.

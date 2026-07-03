@@ -15,7 +15,14 @@ path = "src/main.rs"
 # The GPUI renderer is a heavy git dependency that needs a GPU/display and per-platform
 # validation (research R-UI). It is opt-in so the headless build/test flow stays fast.
 default = []
-gpui = ["dep:gpui", "dep:gpui_platform", "dep:gpui-component", "dep:gpui-component-assets"]
+gpui = [
+    "dep:gpui",
+    "dep:gpui_platform",
+    "dep:gpui-component",
+    "dep:gpui-component-assets",
+    "dep:gpui-terminal",
+    "dep:portable-pty",
+]
 
 [dependencies]
 daedalus-proto = { workspace = true }
@@ -37,6 +44,11 @@ tracing-subscriber = { workspace = true }
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", optional = true }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git", optional = true }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component.git", optional = true }
+
+# Embedded terminal: a GPUI terminal view (built on alacritty_terminal). Our fork carries a
+# 2-line adaptation to the gpui revision gpui-component pins. Paired with a PTY.
+gpui-terminal = { git = "https://github.com/mz2/gpui-terminal.git", branch = "daedalus", optional = true }
+portable-pty = { version = "0.9", optional = true }
 
 # The platform launcher (`application()`); platform features are target-specific.
 [target.'cfg(target_os = "linux")'.dependencies]
