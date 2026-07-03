@@ -50,9 +50,17 @@ and [`research.md`](specs/001-agent-orchestration/research.md) for the design de
 
 ## Prerequisites
 
-- **Rust** 1.83+ (`rustup`), with `clippy` and `rustfmt`.
+- **Rust** 1.95+ (`rust-toolchain.toml` pins it; rustup auto-installs). The pinned `gpui`
+  revision needs ≥1.95 (it uses `std::hint::cold_path`).
 - **zellij** on `PATH` (session multiplexing / terminal attach).
 - For the GPUI UI build only: a GPU/runtime (Metal on macOS; Vulkan/Blade on Linux).
+  - **macOS**: full **Xcode** plus the **Metal Toolchain** component (gpui compiles Metal
+    shaders at build time). If you see `missing Metal Toolchain`, run:
+    ```bash
+    sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+    xcodebuild -downloadComponent MetalToolchain
+    ```
+  - **Linux/Nix**: `nix develop` (or `source scripts/gpui-env.sh`) provides the libs.
 - macOS only, for the `macos` backend: `sandbox-exec` (system-provided).
 
 ## Build · run · test · lint

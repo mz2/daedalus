@@ -11,7 +11,7 @@ developer's (or agent's) machine **without** Canonical Workshop or any remote ac
 - **Rust** 1.83+ (`rustup`), with `clippy` and `rustfmt` components.
 - **zellij** on `PATH` (session multiplexing / terminal attach).
 - Desktop GPU/runtime for **GPUI**:
-  - macOS: recent Xcode command-line tools (Metal).
+  - macOS: full Xcode + the Metal Toolchain component (`xcodebuild -downloadComponent MetalToolchain`).
   - Linux: Vulkan-capable drivers (GPUI's Blade backend) + standard build tooling.
 - macOS only, for the `macos` backend: `sandbox-exec` (system-provided).
 
