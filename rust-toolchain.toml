@@ -1,0 +1,6 @@
+# Pin the Rust toolchain so every machine uses a version new enough for the pinned `gpui`
+# revision (it calls `std::hint::cold_path()`, stable since ~1.95). rustup auto-installs this
+# when you run cargo. Inside `nix develop`, the flake's Rust is used instead (also 1.95).
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
