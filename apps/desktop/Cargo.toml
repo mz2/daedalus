@@ -15,7 +15,7 @@ path = "src/main.rs"
 # The GPUI renderer is a heavy git dependency that needs a GPU/display and per-platform
 # validation (research R-UI). It is opt-in so the headless build/test flow stays fast.
 default = []
-gpui = ["dep:gpui", "dep:gpui_platform"]
+gpui = ["dep:gpui", "dep:gpui_platform", "dep:gpui-component"]
 
 [dependencies]
 daedalus-proto = { workspace = true }
@@ -30,17 +30,18 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# The real GPUI framework (Zed's). Pulled only with `--features gpui`; Cargo.lock pins the
-# exact commit once resolved. Heavy: needs a GPU/display + system libs (vulkan, wayland/x11,
-# fontconfig, …) to build and run.
-gpui = { git = "https://github.com/zed-industries/zed.git", optional = true }
+# The real GPUI framework (Zed's) + the longbridge component library. Pulled only with
+# `--features gpui`. gpui/gpui_platform are pinned to the SAME Zed revision gpui-component
+# targets so there is a single gpui version. Heavy: needs a GPU/display + system libs.
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", optional = true }
+gpui-component = { git = "https://github.com/longbridge/gpui-component.git", optional = true }
 
 # The platform launcher (`application()`); platform features are target-specific.
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", optional = true, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", optional = true, features = ["font-kit", "wayland", "x11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", optional = true, features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", optional = true, features = ["font-kit"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
