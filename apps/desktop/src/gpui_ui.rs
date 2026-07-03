@@ -39,6 +39,19 @@ fn col(c: Color) -> Rgba {
     gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32))
 }
 
+/// A monospace family that is actually present on the host (so fixed-cell terminal/text
+/// rendering doesn't fall back to a proportional font and mangle spacing). The design's
+/// JetBrains Mono is preferred where installed, but we name a guaranteed system font.
+fn mono_family() -> SharedString {
+    if cfg!(target_os = "macos") {
+        "Menlo".into()
+    } else if cfg!(target_os = "windows") {
+        "Consolas".into()
+    } else {
+        "DejaVu Sans Mono".into()
+    }
+}
+
 /// What the content area is showing.
 #[derive(Clone, Copy, PartialEq)]
 enum View {
@@ -782,7 +795,7 @@ impl AppRoot {
                     .p_2()
                     .rounded_md()
                     .bg(gpui::rgba(0x00000040))
-                    .font_family("monospace")
+                    .font_family(mono_family())
                     .text_xs()
                     .child(if output.is_empty() {
                         "— no captured output —".to_string()
@@ -976,7 +989,7 @@ impl AppRoot {
                             div()
                                 .text_xs()
                                 .opacity(0.6)
-                                .font_family("monospace")
+                                .font_family(mono_family())
                                 .child(cmd),
                         )
                         .child(div().text_xs().opacity(0.6).child(
@@ -1114,7 +1127,7 @@ fn spawn_terminal(
     let config = TerminalConfig {
         cols,
         rows,
-        font_family: "JetBrains Mono".to_string(),
+        font_family: mono_family().to_string(),
         font_size: px(13.0),
         line_height_multiplier: 1.0,
         scrollback: 5000,
