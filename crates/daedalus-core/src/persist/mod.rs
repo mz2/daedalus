@@ -16,9 +16,9 @@ use thiserror::Error;
 
 use daedalus_proto::{
     AgenticTool, Availability, BackendId, BackendKind, EnvLifecycle, EnvironmentId, EventId,
-    EventKind, EventPayload, EventRecord, MetricKind, Objective, ObjectiveId, Origin,
+    EventKind, EventPayload, EventRecord, MetricKind, Objective, ObjectiveId, Origin, Outcome,
     ResourceUsageMetric, SandboxEnvironment, Session, SessionId, SessionStatus, Source, SourceId,
-    TaskId, TaskStatus, Timestamp, ToolId, TrackedTask, WorktreeRef,
+    TaskId, TaskStatus, Timestamp, ToolId, TrackedTask, WorkItemRef, WorktreeRef,
 };
 
 /// Persistence errors.
@@ -39,10 +39,20 @@ pub enum StoreError {
 }
 
 /// The current schema version (bumped when migrations change).
-const SCHEMA_VERSION: i64 = 1;
+///
+/// v2 (US6, T073): the `sessions` waiting/attention columns (`pending_prompt`,
+/// `waiting_since`, `work_item_ref`, `last_known_status`) and `terminal_outcome` stored as
+/// a JSON [`Outcome`] instead of plain reason text.
+///
+/// v3 (T086, FR-021b): the `config` key-value table holding operator settings — currently
+/// the per-backend idle rates. New table only, so `CREATE TABLE IF NOT EXISTS` covers the
+/// v2 → v3 upgrade with no ALTER steps.
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS tools (
     id TEXT PRIMARY KEY,
@@ -89,7 +99,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at INTEGER,
     ended_at INTEGER,
     terminal_outcome TEXT,
-    accepts_input INTEGER NOT NULL
+    accepts_input INTEGER NOT NULL,
+    pending_prompt TEXT,
+    waiting_since INTEGER,
+    work_item_ref TEXT,
+    last_known_status TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -155,11 +169,56 @@ impl Store {
 
     fn migrate(&self) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");
+        // `CREATE ... IF NOT EXISTS` throughout: on an existing database this only fills
+        // in missing tables, so the version recorded *before* this run is still readable.
         conn.execute_batch(SCHEMA)?;
+        let recorded: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None), // fresh database
+                other => Err(other),
+            })?;
+        if recorded.as_deref() == Some("1") {
+            Self::upgrade_v1_to_v2(&conn)?;
+        }
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
             [SCHEMA_VERSION.to_string()],
         )?;
+        Ok(())
+    }
+
+    /// v1 → v2: add the US6 waiting/attention columns and wrap the plain-text
+    /// `terminal_outcome` reasons into the richer JSON [`Outcome`] shape.
+    fn upgrade_v1_to_v2(conn: &Connection) -> Result<(), StoreError> {
+        for column in [
+            "pending_prompt TEXT",
+            "waiting_since INTEGER",
+            "work_item_ref TEXT",
+            "last_known_status TEXT",
+        ] {
+            conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), [])?;
+        }
+
+        let reasons: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, terminal_outcome FROM sessions WHERE terminal_outcome IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for (id, reason) in reasons {
+            let wrapped = serde_json::to_string(&Outcome::reason(reason))?;
+            conn.execute(
+                "UPDATE sessions SET terminal_outcome = ?2 WHERE id = ?1",
+                (id, wrapped),
+            )?;
+        }
         Ok(())
     }
 
@@ -172,6 +231,49 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(v.parse().unwrap_or(0))
+    }
+
+    // ----- Operator configuration (FR-021b) -----
+
+    /// Set (or clear) the persisted per-backend idle rate (per hour) used for waiting-cost
+    /// estimates (FR-021b). Configuration survives restart.
+    pub fn set_backend_idle_rate(
+        &self,
+        kind: BackendKind,
+        rate: Option<f64>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let key = format!("idle_rate.{}", enum_to_text(&kind)?);
+        match rate {
+            Some(rate) => {
+                conn.execute(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+                    (key, rate.to_string()),
+                )?;
+            }
+            None => {
+                conn.execute("DELETE FROM config WHERE key = ?1", [key])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// All persisted per-backend idle rates (FR-021b).
+    pub fn backend_idle_rates(&self) -> Result<Vec<(BackendKind, f64)>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM config WHERE key LIKE 'idle_rate.%' ORDER BY key")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (key, value) = row?;
+            let kind = key.trim_start_matches("idle_rate.");
+            match (text_to_enum::<BackendKind>(kind), value.parse::<f64>()) {
+                (Ok(kind), Ok(rate)) => out.push((kind, rate)),
+                _ => continue, // an unknown kind / malformed value never breaks reads
+            }
+        }
+        Ok(out)
     }
 
     // ----- Tools -----
@@ -360,6 +462,26 @@ impl Store {
         })
     }
 
+    /// List every environment record (§6.7 — the Environments screen).
+    pub fn list_environments(&self) -> Result<Vec<SandboxEnvironment>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let mut stmt =
+            conn.prepare("SELECT id, backend_id, origin, worktree, lifecycle FROM environments")?;
+        let rows = stmt.query_map([], |r| {
+            let worktree: Option<String> = r.get(3)?;
+            Ok(SandboxEnvironment {
+                id: EnvironmentId::from_uuid(r.get::<_, String>(0)?.parse().expect("uuid")),
+                backend_id: BackendId::from_uuid(r.get::<_, String>(1)?.parse().expect("uuid")),
+                origin: text_to_enum::<Origin>(&r.get::<_, String>(2)?).expect("origin"),
+                worktree_ref: worktree
+                    .map(|w| serde_json::from_str::<WorktreeRef>(&w).expect("worktree json")),
+                lifecycle: text_to_enum::<EnvLifecycle>(&r.get::<_, String>(4)?)
+                    .expect("lifecycle"),
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// Update an environment's lifecycle.
     pub fn set_environment_lifecycle(
         &self,
@@ -381,8 +503,8 @@ impl Store {
         let conn = self.conn.lock().expect("poisoned");
         conn.execute(
             "INSERT OR REPLACE INTO sessions
-             (id, tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             (id, tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input, pending_prompt, waiting_since, work_item_ref, last_known_status)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             (
                 s.id.to_string(),
                 s.tool_id.to_string(),
@@ -393,8 +515,20 @@ impl Store {
                 s.created_at.millis(),
                 s.started_at.map(|t| t.millis()),
                 s.ended_at.map(|t| t.millis()),
-                s.terminal_outcome.clone(),
+                s.terminal_outcome
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
                 i64::from(s.accepts_input),
+                s.pending_prompt.clone(),
+                s.waiting_since.map(|t| t.millis()),
+                s.work_item_ref
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+                s.last_known_status
+                    .map(|st| enum_to_text(&st))
+                    .transpose()?,
             ),
         )?;
         Ok(())
@@ -404,7 +538,7 @@ impl Store {
     pub fn get_session(&self, id: SessionId) -> Result<Session, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
         conn.query_row(
-            "SELECT tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input FROM sessions WHERE id = ?1",
+            "SELECT tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input, pending_prompt, waiting_since, work_item_ref, last_known_status FROM sessions WHERE id = ?1",
             [id.to_string()],
             |r| Ok(row_to_session(id, r)),
         )
@@ -418,37 +552,36 @@ impl Store {
     pub fn list_sessions(&self) -> Result<Vec<Session>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input FROM sessions ORDER BY created_at DESC",
+            "SELECT tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input, pending_prompt, waiting_since, work_item_ref, last_known_status, id FROM sessions ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
-            let id = SessionId::from_uuid(r.get::<_, String>(0)?.parse().expect("uuid"));
-            // Shift column indices by one because id is column 0 here.
-            Ok(Session {
-                id,
-                tool_id: ToolId::from_uuid(r.get::<_, String>(1)?.parse().expect("uuid")),
-                objective_id: ObjectiveId::from_uuid(r.get::<_, String>(2)?.parse().expect("uuid")),
-                environment_id: EnvironmentId::from_uuid(
-                    r.get::<_, String>(3)?.parse().expect("uuid"),
-                ),
-                source_id: SourceId::from_uuid(r.get::<_, String>(4)?.parse().expect("uuid")),
-                status: text_to_enum::<SessionStatus>(&r.get::<_, String>(5)?).expect("status"),
-                created_at: Timestamp::from_millis(r.get(6)?),
-                started_at: r.get::<_, Option<i64>>(7)?.map(Timestamp::from_millis),
-                ended_at: r.get::<_, Option<i64>>(8)?.map(Timestamp::from_millis),
-                terminal_outcome: r.get(9)?,
-                accepts_input: r.get::<_, i64>(10)? != 0,
-            })
+            // The id is deliberately the LAST column so the shared row mapping applies.
+            let id = SessionId::from_uuid(r.get::<_, String>(14)?.parse().expect("uuid"));
+            Ok(row_to_session(id, r))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Update a session's status (and optionally an outcome/end timestamp).
+    /// Update a session's status (and optionally a reason/end timestamp). A `reason` is
+    /// stored as a reason-only [`Outcome`]; `None` keeps any existing outcome.
     pub fn set_session_status(
         &self,
         id: SessionId,
         status: SessionStatus,
         ended_at: Option<Timestamp>,
-        outcome: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let outcome = reason.map(Outcome::reason);
+        self.set_session_status_with_outcome(id, status, ended_at, outcome.as_ref())
+    }
+
+    /// Update a session's status with a full [`Outcome`] (exit code + summary — FR-015a).
+    pub fn set_session_status_with_outcome(
+        &self,
+        id: SessionId,
+        status: SessionStatus,
+        ended_at: Option<Timestamp>,
+        outcome: Option<&Outcome>,
     ) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");
         conn.execute(
@@ -457,7 +590,43 @@ impl Store {
                 id.to_string(),
                 enum_to_text(&status)?,
                 ended_at.map(|t| t.millis()),
-                outcome,
+                outcome.map(serde_json::to_string).transpose()?,
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Set (or clear) a session's pending prompt + waiting anchor (FR-015b, FR-021a).
+    pub fn set_session_waiting(
+        &self,
+        id: SessionId,
+        pending_prompt: Option<&str>,
+        waiting_since: Option<Timestamp>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        conn.execute(
+            "UPDATE sessions SET pending_prompt = ?2, waiting_since = ?3 WHERE id = ?1",
+            (
+                id.to_string(),
+                pending_prompt,
+                waiting_since.map(|t| t.millis()),
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Set (or clear) the last-known status preserved while a session is `Unknown` (FR-020).
+    pub fn set_session_last_known(
+        &self,
+        id: SessionId,
+        last_known: Option<SessionStatus>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        conn.execute(
+            "UPDATE sessions SET last_known_status = ?2 WHERE id = ?1",
+            (
+                id.to_string(),
+                last_known.map(|st| enum_to_text(&st)).transpose()?,
             ),
         )?;
         Ok(())
@@ -567,6 +736,22 @@ impl Store {
         }
     }
 
+    /// Line count of a session's persisted capture file (0 if none) — the "M" of the
+    /// trimmed-output notice "showing last N of M lines" (FR-016a). A trailing
+    /// unterminated line counts as a line.
+    #[must_use]
+    pub fn capture_line_count(&self, session: SessionId) -> u64 {
+        let path = self.captures_dir.join(format!("{session}.log"));
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes.is_empty() => 0,
+            Ok(bytes) => {
+                let newlines = bytes.iter().filter(|b| **b == b'\n').count() as u64;
+                newlines + u64::from(*bytes.last().expect("non-empty") != b'\n')
+            }
+            Err(_) => 0,
+        }
+    }
+
     /// Insert a pre-built event record.
     pub fn insert_event(&self, event: &EventRecord) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");
@@ -586,8 +771,10 @@ impl Store {
     /// List a session's events in time order.
     pub fn list_events(&self, session: SessionId) -> Result<Vec<EventRecord>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
+        // rowid breaks same-millisecond ties in insertion order, keeping the timeline
+        // stable (FR-019a).
         let mut stmt = conn.prepare(
-            "SELECT id, timestamp, kind, payload FROM events WHERE session_id = ?1 ORDER BY timestamp, id",
+            "SELECT id, timestamp, kind, payload FROM events WHERE session_id = ?1 ORDER BY timestamp, rowid",
         )?;
         let rows = stmt.query_map([session.to_string()], |r| {
             Ok(EventRecord {
@@ -637,6 +824,34 @@ impl Store {
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
+
+    /// The most recent `limit` samples of one metric for a session, oldest → newest —
+    /// the short-horizon history behind the telemetry rail's sparklines (FR-019).
+    pub fn metric_history(
+        &self,
+        session: SessionId,
+        metric: MetricKind,
+        limit: usize,
+    ) -> Result<Vec<ResourceUsageMetric>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT value, timestamp FROM metrics WHERE session_id = ?1 AND metric = ?2 ORDER BY timestamp DESC, rowid DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            (session.to_string(), enum_to_text(&metric)?, limit as i64),
+            |r| {
+                Ok(ResourceUsageMetric {
+                    session_id: session,
+                    metric,
+                    value: r.get(0)?,
+                    timestamp: Timestamp::from_millis(r.get(1)?),
+                })
+            },
+        )?;
+        let mut samples: Vec<ResourceUsageMetric> = rows.collect::<Result<_, _>>()?;
+        samples.reverse(); // newest-first query → oldest-first history
+        Ok(samples)
+    }
 }
 
 fn row_to_session(id: SessionId, r: &rusqlite::Row<'_>) -> Session {
@@ -661,7 +876,23 @@ fn row_to_session(id: SessionId, r: &rusqlite::Row<'_>) -> Session {
             .get::<_, Option<i64>>(7)
             .expect("col")
             .map(Timestamp::from_millis),
-        terminal_outcome: r.get(8).expect("col"),
+        terminal_outcome: r
+            .get::<_, Option<String>>(8)
+            .expect("col")
+            .map(|o| serde_json::from_str::<Outcome>(&o).expect("outcome json")),
         accepts_input: r.get::<_, i64>(9).expect("col") != 0,
+        pending_prompt: r.get(10).expect("col"),
+        waiting_since: r
+            .get::<_, Option<i64>>(11)
+            .expect("col")
+            .map(Timestamp::from_millis),
+        work_item_ref: r
+            .get::<_, Option<String>>(12)
+            .expect("col")
+            .map(|w| serde_json::from_str::<WorkItemRef>(&w).expect("work item json")),
+        last_known_status: r
+            .get::<_, Option<String>>(13)
+            .expect("col")
+            .map(|s| text_to_enum::<SessionStatus>(&s).expect("status")),
     }
 }

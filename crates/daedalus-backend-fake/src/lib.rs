@@ -38,7 +38,7 @@ struct Inner {
 /// Configurable in-memory backend.
 pub struct FakeBackend {
     id: BackendId,
-    availability: Mutex<Availability>,
+    availability: Mutex<(Availability, Option<String>)>,
     inner: Mutex<Inner>,
 }
 
@@ -54,14 +54,20 @@ impl FakeBackend {
     pub fn new() -> Self {
         Self {
             id: BackendId::new(),
-            availability: Mutex::new(Availability::Available),
+            availability: Mutex::new((Availability::Available, None)),
             inner: Mutex::new(Inner::default()),
         }
     }
 
     /// Override the availability the backend reports (FR-028 testing).
     pub fn set_availability(&self, availability: Availability) {
-        *self.availability.lock().expect("poisoned") = availability;
+        self.set_availability_with_reason(availability, None);
+    }
+
+    /// Override the availability together with its stated reason (FR-028): degraded or
+    /// unavailable backends state *why* (e.g. resource pressure).
+    pub fn set_availability_with_reason(&self, availability: Availability, reason: Option<&str>) {
+        *self.availability.lock().expect("poisoned") = (availability, reason.map(str::to_string));
     }
 
     /// Make the next `acquire` fail as if provisioning was impossible (C-A1, C-B2).
@@ -108,7 +114,11 @@ impl Backend for FakeBackend {
     }
 
     async fn availability(&self) -> Availability {
-        *self.availability.lock().expect("poisoned")
+        self.availability.lock().expect("poisoned").0
+    }
+
+    async fn availability_reason(&self) -> Option<String> {
+        self.availability.lock().expect("poisoned").1.clone()
     }
 
     async fn acquire(&self, req: AcquireRequest) -> Result<SandboxEnvironment, BackendError> {

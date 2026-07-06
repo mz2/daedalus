@@ -27,6 +27,7 @@ async fn run_lifecycle(app: &App, backend: BackendKind, tasks_dir: &std::path::P
             },
             capabilities: Capabilities {
                 accepts_interactive_input: true,
+                prompt_convention: None,
             },
         }))
         .await
@@ -50,6 +51,7 @@ async fn run_lifecycle(app: &App, backend: BackendKind, tasks_dir: &std::path::P
             origin: Origin::Fresh,
             worktree: None,
             backend,
+            limits: daedalus_proto::ResourceLimits::default(),
         }))
         .await
         .unwrap()

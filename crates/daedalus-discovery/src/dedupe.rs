@@ -12,10 +12,19 @@ use daedalus_proto::{Availability, DiscoveredSession};
 /// known-unreachable session as healthy).
 #[must_use]
 pub fn deduplicate(all: Vec<DiscoveredSession>) -> Vec<DiscoveredSession> {
+    deduplicate_counted(all).0
+}
+
+/// Like [`deduplicate`], but also reports how many distinct sessions were seen from more
+/// than one source — the Discover screen's de-duplication footnote (FR-013).
+#[must_use]
+pub fn deduplicate_counted(all: Vec<DiscoveredSession>) -> (Vec<DiscoveredSession>, usize) {
     let mut best: BTreeMap<String, DiscoveredSession> = BTreeMap::new();
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
 
     for candidate in all {
         let key = candidate.id.identity.0.clone();
+        *seen.entry(key.clone()).or_insert(0) += 1;
         match best.get(&key) {
             Some(existing) if !is_better(&candidate, existing) => {}
             _ => {
@@ -24,7 +33,8 @@ pub fn deduplicate(all: Vec<DiscoveredSession>) -> Vec<DiscoveredSession> {
         }
     }
 
-    best.into_values().collect()
+    let deduped = seen.values().filter(|&&n| n > 1).count();
+    (best.into_values().collect(), deduped)
 }
 
 /// Rank for choosing the surviving duplicate: higher is better.
@@ -80,5 +90,20 @@ mod tests {
         let out = deduplicate(vec![gone, healthy]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].source_availability, Availability::Available);
+    }
+
+    #[test]
+    fn counted_dedup_reports_multi_source_sessions() {
+        // FR-013 (T085): the Discover footnote needs the number of sessions that were
+        // advertised from more than one source and folded.
+        let (out, deduped) = deduplicate_counted(vec![
+            sample(true, Availability::Available),
+            sample(true, Availability::Available),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(deduped, 1);
+
+        let (_, none) = deduplicate_counted(vec![sample(true, Availability::Available)]);
+        assert_eq!(none, 0);
     }
 }

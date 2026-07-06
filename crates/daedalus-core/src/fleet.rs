@@ -16,11 +16,17 @@ impl Core {
                 .get_tool(s.tool_id)
                 .map(|t| t.name)
                 .unwrap_or_else(|_| "(unknown tool)".to_string());
-            let objective = self
+            let (objective, spec) = self
                 .store
                 .get_objective(s.objective_id)
-                .map(|o| o.description)
+                .map(|o| (o.description, o.artifact_ref.tasks_file))
                 .unwrap_or_default();
+            let tasks = self.store.list_tasks(s.id).unwrap_or_default();
+            let tasks_done = tasks
+                .iter()
+                .filter(|t| t.status == daedalus_proto::TaskStatus::Done)
+                .count();
+            let tasks_total = tasks.len();
             let env = self.store.get_environment(s.environment_id).ok();
             let origin = env
                 .as_ref()
@@ -38,6 +44,9 @@ impl Core {
                 origin,
                 status: s.status,
                 accepts_input: s.accepts_input,
+                spec,
+                tasks_done,
+                tasks_total,
             });
         }
         Ok(out)

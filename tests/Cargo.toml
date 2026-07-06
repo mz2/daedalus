@@ -25,6 +25,8 @@ tokio = { workspace = true }
 bytes = { workspace = true }
 tempfile = { workspace = true }
 async-trait = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
 
 # Contract tests (test-first per Constitution Principle I).
 [[test]]
@@ -59,6 +61,9 @@ path = "unit/state_machine.rs"
 [[test]]
 name = "unit_redact"
 path = "unit/redact.rs"
+[[test]]
+name = "unit_proto_attention"
+path = "unit/proto_attention.rs"
 
 # Integration tests.
 [[test]]
@@ -97,3 +102,15 @@ path = "integration/retention.rs"
 [[test]]
 name = "integration_network_posture"
 path = "integration/network_posture.rs"
+[[test]]
+name = "integration_waiting_input"
+path = "integration/waiting_input.rs"
+[[test]]
+name = "integration_needs_you"
+path = "integration/needs_you.rs"
+[[test]]
+name = "integration_tasks_board"
+path = "integration/tasks_board.rs"
+[[test]]
+name = "integration_limits"
+path = "integration/limits.rs"

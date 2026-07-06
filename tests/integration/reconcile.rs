@@ -38,8 +38,13 @@ async fn restart_reconciles_lost_sessions_without_losing_history() {
     let corrected = restarted.reconcile().await.unwrap();
     assert_eq!(corrected, 1);
 
-    // Status re-derived to an attention state (Stalled), history preserved.
+    // Contact lost ⇒ Unknown, with the last-known state preserved (never shown healthy —
+    // FR-020) and history intact.
     let detail = restarted.session_detail(id).unwrap();
-    assert_eq!(detail.session.status, SessionStatus::Stalled);
+    assert_eq!(detail.session.status, SessionStatus::Unknown);
+    assert_eq!(
+        detail.session.last_known_status,
+        Some(SessionStatus::Running)
+    );
     assert!(restarted.store().list_events(id).unwrap().len() > events_before);
 }

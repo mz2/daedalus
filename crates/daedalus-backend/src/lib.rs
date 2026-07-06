@@ -84,6 +84,12 @@ pub trait Backend: Send + Sync {
     /// Current availability; MUST NOT error — unavailability is a value (FR-028, C-B4).
     async fn availability(&self) -> Availability;
 
+    /// Stated reason when degraded/unavailable (FR-028), e.g. "high memory pressure".
+    /// `None` for a healthy backend (and for backends that cannot state one).
+    async fn availability_reason(&self) -> Option<String> {
+        None
+    }
+
     /// Provision a fresh isolated environment, or attach a pre-existing one.
     ///
     /// For [`Origin::PreExisting`], MUST establish an isolated git worktree; if it cannot,

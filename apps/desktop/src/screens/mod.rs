@@ -5,6 +5,8 @@
 pub mod backends;
 pub mod discover;
 pub mod fleet;
+pub mod needs;
+pub mod notifications;
 pub mod session;
 pub mod settings;
 pub mod start;

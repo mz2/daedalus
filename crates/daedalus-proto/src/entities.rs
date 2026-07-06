@@ -8,8 +8,8 @@ use crate::ids::{
     TaskId, ToolId,
 };
 use crate::status::{
-    Availability, BackendKind, EnvLifecycle, EventKind, MetricKind, Origin, SessionStatus,
-    SourceKind, TaskStatus,
+    Availability, BackendKind, EnvLifecycle, EventKind, MetricKind, OperatorAction, Origin,
+    SessionStatus, SourceKind, TaskStatus,
 };
 
 /// Unix epoch milliseconds. Kept as a plain integer to stay dependency-light and
@@ -61,11 +61,28 @@ pub struct InvocationSpec {
     pub env: Vec<(String, String)>,
 }
 
+/// How a tool's pending input prompts are recognized, driving `WaitingForInput` detection
+/// (FR-001a, FR-015b). Only tools that accept interactive input may declare one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptConvention {
+    /// The in-Workshop SDK signals the waiting state (with the pending question).
+    SdkSignal,
+    /// A regex matched against the streamed terminal output; the match (or its first
+    /// capture group) is the pending question.
+    PromptPattern(String),
+}
+
 /// Declared capabilities of an agentic tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Capabilities {
     /// Whether the tool accepts interactive input while running (FR-023).
     pub accepts_interactive_input: bool,
+    /// How pending input prompts are recognized (FR-015b); only meaningful — and only
+    /// valid — when `accepts_interactive_input` is true. `None` ⇒ the tool never enters
+    /// `WaitingForInput`.
+    #[serde(default)]
+    pub prompt_convention: Option<PromptConvention>,
 }
 
 /// An operator-registered, declaratively-defined agentic tool (FR-001a).
@@ -136,7 +153,7 @@ pub struct SandboxEnvironment {
 }
 
 /// A source of sandbox environments behind the common abstraction (FR-027).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnvironmentBackend {
     /// Identifier.
     pub id: BackendId,
@@ -144,6 +161,13 @@ pub struct EnvironmentBackend {
     pub kind: BackendKind,
     /// Current availability (FR-028).
     pub availability: Availability,
+    /// Stated reason when degraded/unavailable (FR-028), e.g. "high memory pressure".
+    #[serde(default)]
+    pub availability_reason: Option<String>,
+    /// Optional operator-configured idle rate (per hour) for waiting-cost estimates
+    /// (FR-021b); `None` ⇒ no cost shown.
+    #[serde(default)]
+    pub idle_rate: Option<f64>,
 }
 
 /// Where a session is discovered (FR-010).
@@ -155,6 +179,45 @@ pub struct Source {
     pub kind: SourceKind,
     /// Unreachable when the host stops advertising / tunnel drops (FR-014).
     pub availability: Availability,
+    /// Stated reason when degraded/unavailable, surfaced in the shell hosts indicator
+    /// (FR-028).
+    #[serde(default)]
+    pub availability_reason: Option<String>,
+}
+
+/// An optional external work item (e.g. a GitHub issue or Jira key) shown as a display
+/// chip alongside a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkItemRef {
+    /// Which tracker the reference lives in (e.g. "github", "jira").
+    pub tracker: String,
+    /// The reference within that tracker (e.g. "daedalus#42", "DAE-7").
+    pub reference: String,
+}
+
+/// How a session's run ended (or paused for confirmation): reason text for
+/// failed/stalled/stopped, exit code + agent exit summary for `AwaitingConfirmation`
+/// (FR-015a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Outcome {
+    /// Human-readable reason (failed/stalled/stopped).
+    pub reason: Option<String>,
+    /// The agent process exit code, when it exited.
+    pub exit_code: Option<i32>,
+    /// The agent's exit summary, surfaced while awaiting confirmation (FR-015a).
+    pub exit_summary: Option<String>,
+}
+
+impl Outcome {
+    /// An outcome that is only a reason text (the failed/stalled/stopped shape).
+    #[must_use]
+    pub fn reason(text: impl Into<String>) -> Self {
+        Self {
+            reason: Some(text.into()),
+            exit_code: None,
+            exit_summary: None,
+        }
+    }
 }
 
 /// A single invocation of an agentic tool against an objective within an environment.
@@ -178,10 +241,24 @@ pub struct Session {
     pub started_at: Option<Timestamp>,
     /// When the session reached a terminal state.
     pub ended_at: Option<Timestamp>,
-    /// Reason text for failed/stalled/stopped.
-    pub terminal_outcome: Option<String>,
+    /// How the run ended: reason for failed/stalled/stopped, exit code + summary for
+    /// awaiting-confirmation (FR-015a).
+    pub terminal_outcome: Option<Outcome>,
     /// Mirrors the tool's input capability (FR-023).
     pub accepts_input: bool,
+    /// The agent's pending question while `WaitingForInput` (FR-015b); cleared on answer.
+    #[serde(default)]
+    pub pending_prompt: Option<String>,
+    /// Set on entering `WaitingForInput`/`AwaitingConfirmation`; drives waiting duration +
+    /// idle cost (FR-021a/b).
+    #[serde(default)]
+    pub waiting_since: Option<Timestamp>,
+    /// Optional external work item for display chips.
+    #[serde(default)]
+    pub work_item_ref: Option<WorkItemRef>,
+    /// While `Unknown`, the state the session was last known to be in (FR-020).
+    #[serde(default)]
+    pub last_known_status: Option<SessionStatus>,
 }
 
 /// Captured output, task-status changes, and lifecycle events for a session (FR-018).
@@ -225,6 +302,11 @@ pub enum EventPayload {
         status: SessionStatus,
         /// Optional reason text.
         note: Option<String>,
+    },
+    /// A key operator action (start/stop/input-sent/confirm/clean-up — FR-019a).
+    OperatorAction {
+        /// Which action.
+        action: OperatorAction,
     },
 }
 

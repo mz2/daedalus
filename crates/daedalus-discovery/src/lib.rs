@@ -57,6 +57,12 @@ impl DiscoveryCoordinator {
 
     /// Poll every source and return one de-duplicated, availability-correct list.
     pub async fn discover(&self) -> Vec<DiscoveredSession> {
+        self.discover_counted().await.0
+    }
+
+    /// Like [`Self::discover`], but also reports how many sessions were advertised from
+    /// multiple sources and de-duplicated (FR-013 — the Discover footnote).
+    pub async fn discover_counted(&self) -> (Vec<DiscoveredSession>, usize) {
         // Phase 1: poll all sources without holding the lock across awaits.
         let mut polled_all: Vec<(SourceId, Availability, Vec<DiscoveredSession>)> =
             Vec::with_capacity(self.sources.len());
@@ -95,6 +101,6 @@ impl DiscoveryCoordinator {
         }
         drop(last);
 
-        deduplicate(all)
+        dedupe::deduplicate_counted(all)
     }
 }

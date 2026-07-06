@@ -8,8 +8,8 @@
 
 use daedalus_backend::AcquireRequest;
 use daedalus_proto::{
-    Availability, EnvLifecycle, ResourceLimits, Session, SessionId, SessionStatus, Source,
-    SourceId, SourceKind, StartSessionRequest,
+    Availability, EnvLifecycle, Session, SessionId, SessionStatus, Source, SourceId, SourceKind,
+    StartSessionRequest,
 };
 
 use crate::session::state::{transition, Trigger};
@@ -52,7 +52,7 @@ impl Core {
         let acquire = AcquireRequest {
             origin: req.origin,
             worktree: req.worktree.clone(),
-            limits: ResourceLimits::default(),
+            limits: req.limits,
         };
         let env = backend
             .acquire(acquire)
@@ -66,6 +66,7 @@ impl Core {
             id: SourceId::new(),
             kind: SourceKind::Local,
             availability: Availability::Available,
+            availability_reason: None,
         };
         self.store.upsert_source(&source)?;
 
@@ -82,6 +83,10 @@ impl Core {
             ended_at: None,
             terminal_outcome: None,
             accepts_input: tool.capabilities.accepts_interactive_input,
+            pending_prompt: None,
+            waiting_since: None,
+            work_item_ref: None,
+            last_known_status: None,
         };
         self.store.upsert_session(&session)?;
         self.record_lifecycle(id, SessionStatus::Starting, None);
@@ -99,8 +104,10 @@ impl Core {
                         backend_id: backend.id(),
                         environment_id: env.id,
                         zellij_session: handle.zellij_session,
+                        limits: req.limits,
                     },
                 );
+                self.record_operator_action(id, daedalus_proto::OperatorAction::Start);
                 self.record_lifecycle(id, running, None);
                 Ok(id)
             }

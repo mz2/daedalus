@@ -1,8 +1,11 @@
-//! Terminal-state, stall, and failure detection, including the `AwaitingConfirmation` path
-//! (FR-015/015a/020). The core never marks a session `Completed` on agent exit alone —
-//! that requires all tracked tasks done or an explicit confirmation.
+//! Terminal-state, stall, failure, and waiting-for-input detection, including the
+//! `AwaitingConfirmation` path (FR-015/015a/015b/020). The core never marks a session
+//! `Completed` on agent exit alone — that requires all tracked tasks done or an explicit
+//! confirmation. A session blocked on operator input is surfaced as `WaitingForInput` per
+//! the tool's declared prompt convention and is never reported stalled.
 
-use daedalus_proto::{SessionId, SessionStatus};
+use daedalus_proto::{Outcome, PromptConvention, SessionId, SessionStatus};
+use daedalus_sdk::WaitingState;
 
 use crate::session::state::{transition, Trigger};
 use crate::{clock, map_not_found, Core, CoreError};
@@ -24,12 +27,19 @@ pub enum AgentSignal {
 impl Core {
     /// Apply an observed [`AgentSignal`] to a session, advancing the state machine and
     /// persisting the new status (with an `ended_at` for terminal states).
+    ///
+    /// The stall detector deliberately **skips** a session that is `WaitingForInput`: it is
+    /// blocked on the operator, not stalled (FR-015b).
     pub async fn apply_signal(
         &self,
         id: SessionId,
         signal: AgentSignal,
     ) -> Result<SessionStatus, CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
+
+        if signal == AgentSignal::NoProgress && session.status == SessionStatus::WaitingForInput {
+            return Ok(session.status);
+        }
 
         let trigger = match signal {
             AgentSignal::Crashed => Trigger::AgentCrashed,
@@ -52,7 +62,7 @@ impl Core {
         let next = transition(session.status, trigger)
             .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
 
-        let note = match signal {
+        let mut note = match signal {
             AgentSignal::Crashed => Some("agent crashed or exited abnormally".to_string()),
             AgentSignal::NoProgress => Some(format!(
                 "no progress for {}s",
@@ -61,9 +71,118 @@ impl Core {
             _ => None,
         };
         let ended = next.is_terminal().then(clock::now);
-        self.store
-            .set_session_status(id, next, ended, note.as_deref())?;
+        if next == SessionStatus::AwaitingConfirmation {
+            // A clean exit awaiting confirmation carries the exit code and the agent's
+            // exit summary, and anchors the waiting duration (FR-015a, FR-021a). The
+            // summary also rides on the notification, so the operator can read what is
+            // blocked on them without opening the session first (FR-021).
+            let outcome = Outcome {
+                reason: None,
+                exit_code: Some(0),
+                exit_summary: self.exit_summary(id),
+            };
+            note = outcome.exit_summary.clone();
+            self.store
+                .set_session_status_with_outcome(id, next, ended, Some(&outcome))?;
+            self.store
+                .set_session_waiting(id, None, Some(clock::now()))?;
+        } else {
+            self.store
+                .set_session_status(id, next, ended, note.as_deref())?;
+        }
         self.record_lifecycle(id, next, note);
         Ok(next)
+    }
+
+    /// The agent's exit summary: the last non-empty line of its captured output, if any.
+    fn exit_summary(&self, id: SessionId) -> Option<String> {
+        let tail = self.store.output_tail(id, 4096);
+        tail.lines()
+            .rev()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Move a running session into `WaitingForInput`, capturing the agent's pending
+    /// question and the waiting anchor (FR-015b).
+    pub fn mark_waiting_for_input(
+        &self,
+        id: SessionId,
+        prompt: &str,
+    ) -> Result<SessionStatus, CoreError> {
+        let session = self.store.get_session(id).map_err(map_not_found)?;
+        let next = transition(session.status, Trigger::InputRequested)
+            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        self.store
+            .set_session_waiting(id, Some(prompt), Some(clock::now()))?;
+        self.store.set_session_status(id, next, None, None)?;
+        self.record_lifecycle(id, next, Some(prompt.to_string()));
+        Ok(next)
+    }
+
+    /// Return a `WaitingForInput` session to `Running`, clearing the pending prompt and
+    /// waiting anchor (the answer was delivered, or the agent unblocked itself).
+    pub fn clear_waiting_for_input(&self, id: SessionId) -> Result<SessionStatus, CoreError> {
+        let session = self.store.get_session(id).map_err(map_not_found)?;
+        let next = transition(session.status, Trigger::InputProvided)
+            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        self.store.set_session_waiting(id, None, None)?;
+        self.store.set_session_status(id, next, None, None)?;
+        self.record_lifecycle(id, next, None);
+        Ok(next)
+    }
+
+    /// Observe a chunk of the session's terminal output and, when the tool declares a
+    /// [`PromptConvention::PromptPattern`] that matches, enter `WaitingForInput` with the
+    /// matched question text (FR-015b). Tools with no declaration never enter the state.
+    pub fn observe_output(&self, id: SessionId, text: &str) -> Result<(), CoreError> {
+        let session = self.store.get_session(id).map_err(map_not_found)?;
+        if session.status != SessionStatus::Running || !session.accepts_input {
+            return Ok(());
+        }
+        let tool = self.store.get_tool(session.tool_id)?;
+        let Some(PromptConvention::PromptPattern(pattern)) = tool.capabilities.prompt_convention
+        else {
+            return Ok(());
+        };
+        let Ok(re) = regex::Regex::new(&pattern) else {
+            return Ok(()); // validated at registration; never fail the output path
+        };
+        if let Some(caps) = re.captures(text) {
+            let question = caps
+                .get(1)
+                .or_else(|| caps.get(0))
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default();
+            self.mark_waiting_for_input(id, &question)?;
+        }
+        Ok(())
+    }
+
+    /// Consume the in-Workshop SDK's waiting signal for a tool declared with
+    /// [`PromptConvention::SdkSignal`] (FR-015b): `Some` enters `WaitingForInput` with the
+    /// pending question; `None` clears it (the agent unblocked itself).
+    pub fn apply_sdk_waiting(
+        &self,
+        id: SessionId,
+        signal: Option<WaitingState>,
+    ) -> Result<SessionStatus, CoreError> {
+        let session = self.store.get_session(id).map_err(map_not_found)?;
+        let tool = self.store.get_tool(session.tool_id)?;
+        if !session.accepts_input
+            || tool.capabilities.prompt_convention != Some(PromptConvention::SdkSignal)
+        {
+            return Ok(session.status);
+        }
+        match signal {
+            Some(waiting) if session.status == SessionStatus::Running => {
+                self.mark_waiting_for_input(id, &waiting.question)
+            }
+            None if session.status == SessionStatus::WaitingForInput => {
+                self.clear_waiting_for_input(id)
+            }
+            _ => Ok(session.status),
+        }
     }
 }

@@ -1,10 +1,63 @@
 //! Integration test for intervening in a session's lifecycle (US4): stop, send-input, and
-//! clean-up — and that other sessions are unaffected.
+//! clean-up — and that other sessions are unaffected. Every key operator action also
+//! lands on the session's persisted event timeline (FR-019a, T082).
 
 use bytes::Bytes;
 use daedalus_app::AppQuery;
-use daedalus_proto::SessionStatus;
+use daedalus_proto::{EventKind, EventPayload, OperatorAction, SessionId, SessionStatus};
 use daedalus_tests::Fixture;
+
+fn operator_actions(fx: &Fixture, id: SessionId) -> Vec<OperatorAction> {
+    fx.core
+        .store()
+        .list_events(id)
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.payload {
+            EventPayload::OperatorAction { action } => {
+                assert_eq!(e.kind, EventKind::OperatorAction);
+                Some(*action)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn operator_actions_are_recorded_on_the_session_timeline() {
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
+
+    fx.core
+        .send_input(id, Bytes::from_static(b"y\n"))
+        .await
+        .unwrap();
+    fx.core.stop_session(id).await.unwrap();
+    fx.core.clean_up(id).await.unwrap();
+
+    // start / input-sent / stop / clean-up, in order (FR-019a).
+    assert_eq!(
+        operator_actions(&fx, id),
+        vec![
+            OperatorAction::Start,
+            OperatorAction::InputSent,
+            OperatorAction::Stop,
+            OperatorAction::CleanUp,
+        ]
+    );
+
+    // Confirm-completion is recorded too.
+    let req = fx.fresh_request(tool);
+    fx.write_tasks(&req.objective, "- [ ] T001 Implement\n");
+    let confirm = fx.core.start_session(req).await.unwrap();
+    fx.core
+        .apply_signal(confirm, daedalus_core::AgentSignal::ExitedCleanly)
+        .await
+        .unwrap();
+    fx.core.confirm_completion(confirm).await.unwrap();
+    assert!(operator_actions(&fx, confirm).contains(&OperatorAction::ConfirmCompletion));
+}
 
 #[tokio::test]
 async fn stop_send_input_and_cleanup_are_isolated() {
@@ -27,8 +80,8 @@ async fn stop_send_input_and_cleanup_are_isolated() {
     let d1 = fx.app.session(s1).unwrap();
     assert_eq!(d1.session.status, SessionStatus::Stopped);
     assert_eq!(
-        d1.session.terminal_outcome.as_deref(),
-        Some("stopped by operator")
+        d1.session.terminal_outcome,
+        Some(daedalus_proto::Outcome::reason("stopped by operator"))
     );
     assert_eq!(
         fx.app.session(s2).unwrap().session.status,

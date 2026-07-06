@@ -58,8 +58,16 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
   screen with source-drop, start/backends/tools failure states, storyboards. spec.md gained US6 +
   FR-015b/016a/019a/021a/021b/025a (+ SC-014/015); data-model gained `WaitingForInput`/`Unknown`,
   AttentionItem, prompt conventions, idle rates. Constitution is v1.1.0 (Principle IV: validate UI
-  implementation designs against the HTML prototypes). **New unstarted work: tasks.md Phases 9–10
-  (T069–T088)** — everything through Phase 8 remains green as below.
+  implementation designs against the HTML prototypes). **Phases 9–10 (T069–T088) are implemented
+  test-first and green**: `cargo test --workspace` 180 passing; `clippy -D warnings` clean (default +
+  `gpui` feature). Landed: `WaitingForInput`/`Unknown` statuses + prompt-convention detection (SDK
+  signal / regex, riding the capture pipeline), `Core::needs_you()` + `AppQuery` surfaces with idle-cost
+  derivation (persisted per-backend rates, schema v3), blocked-on-operator notifications, Needs-you
+  view/tray/strip + answer-mode deep links, the aggregate Tasks board as home, telemetry rail
+  (sparkline history, OperatorAction timeline, outcome block), trim notice, degraded availability +
+  hosts indicator + availability chips, system theme (live `observe_window_appearance`), resource-limit
+  policy, and a Principle-IV re-validation of all pre-update screens (deviations recorded in
+  `design/README.md`). Open: **T066** (perf validation — needs real backends/hardware).
 - 001-agent-orchestration (implemented 2026-06-19): Cargo workspace built out test-first. Headless stack
   complete and green (`cargo test --workspace`: 86 passing; `clippy -D warnings` clean) — `daedalus-proto`,
   `daedalus-backend` (+ `fake`/`workshop`/`macos`), SQLite persistence + file-backed capture, the session

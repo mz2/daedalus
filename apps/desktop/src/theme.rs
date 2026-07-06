@@ -149,6 +149,66 @@ pub enum ThemeMode {
     Light,
 }
 
+/// The operating system's current appearance, as reported by the platform layer (the GPUI
+/// window supplies it; headless tests inject it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsAppearance {
+    /// The OS is in light appearance.
+    Light,
+    /// The OS is in dark appearance.
+    Dark,
+}
+
+/// The operator's theme choice (FR-009a, T084): Light, Dark, or System — where System
+/// follows the OS appearance and is the **default** (prototype `app.jsx`
+/// `TWEAK_DEFAULTS.theme = "system"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemePreference {
+    /// Follow the operating system's Light / Dark appearance (default).
+    #[default]
+    System,
+    /// Always light.
+    Light,
+    /// Always dark.
+    Dark,
+}
+
+impl ThemePreference {
+    /// The segment options in prototype order (System | Light | Dark).
+    #[must_use]
+    pub fn all() -> [ThemePreference; 3] {
+        [
+            ThemePreference::System,
+            ThemePreference::Light,
+            ThemePreference::Dark,
+        ]
+    }
+
+    /// The segment label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemePreference::System => "System",
+            ThemePreference::Light => "Light",
+            ThemePreference::Dark => "Dark",
+        }
+    }
+
+    /// Resolve the effective [`ThemeMode`]: System adopts the injected OS appearance;
+    /// explicit choices ignore it.
+    #[must_use]
+    pub fn resolve(self, os_appearance: OsAppearance) -> ThemeMode {
+        match self {
+            ThemePreference::Light => ThemeMode::Light,
+            ThemePreference::Dark => ThemeMode::Dark,
+            ThemePreference::System => match os_appearance {
+                OsAppearance::Light => ThemeMode::Light,
+                OsAppearance::Dark => ThemeMode::Dark,
+            },
+        }
+    }
+}
+
 /// Density steps → row height / card pad / gap (design/README.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Density {
@@ -223,9 +283,26 @@ impl StatusTone {
             SessionStatus::Running => StatusTone::Running,
             SessionStatus::Stalled => StatusTone::Stalled,
             SessionStatus::Failed => StatusTone::Failed,
+            // Waiting-for-input and awaiting-confirmation deliberately share the purple
+            // family: purple means "blocked on the operator" (design/README.md §status).
+            SessionStatus::WaitingForInput => StatusTone::Awaiting,
             SessionStatus::AwaitingConfirmation => StatusTone::Awaiting,
             SessionStatus::Completed => StatusTone::Completed,
             SessionStatus::Stopped => StatusTone::Stopped,
+            SessionStatus::Unknown => StatusTone::Unknown,
+        }
+    }
+
+    /// The design-table label for a session status. The two purple states are
+    /// distinguished by label ("Waiting for input" vs. "Awaiting confirmation"), and
+    /// `Unknown` reads as "Connection lost" — never as healthy (design/README.md §status).
+    #[must_use]
+    pub fn session_label(status: SessionStatus) -> &'static str {
+        match status {
+            SessionStatus::WaitingForInput => "Waiting for input",
+            SessionStatus::AwaitingConfirmation => "Awaiting confirmation",
+            SessionStatus::Unknown => "Connection lost",
+            other => StatusTone::from_session(other).label(),
         }
     }
 
@@ -452,10 +529,13 @@ mod tests {
             SessionStatus::Stalled,
             SessionStatus::Stopped,
             SessionStatus::AwaitingConfirmation,
+            SessionStatus::WaitingForInput,
+            SessionStatus::Unknown,
         ] {
             let tone = StatusTone::from_session(status);
             assert!(!tone.label().is_empty());
             assert!(!tone.glyph().is_empty());
+            assert!(!StatusTone::session_label(status).is_empty());
         }
     }
 
@@ -508,6 +588,37 @@ mod tests {
             assert!(!tone.label().is_empty());
             assert!(tone.accessible_label().contains(tone.label()));
         }
+    }
+
+    #[test]
+    fn system_theme_preference_is_the_default_and_follows_the_os() {
+        // FR-009a (T084): "System" follows the OS appearance and is the DEFAULT
+        // (prototype `app.jsx` TWEAK_DEFAULTS.theme = "system").
+        assert_eq!(ThemePreference::default(), ThemePreference::System);
+        assert_eq!(
+            ThemePreference::System.resolve(OsAppearance::Light),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            ThemePreference::System.resolve(OsAppearance::Dark),
+            ThemeMode::Dark
+        );
+        // Explicit choices ignore the OS appearance.
+        assert_eq!(
+            ThemePreference::Light.resolve(OsAppearance::Dark),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            ThemePreference::Dark.resolve(OsAppearance::Light),
+            ThemeMode::Dark
+        );
+    }
+
+    #[test]
+    fn theme_preference_segment_matches_the_prototype() {
+        // Segment order + labels per the prototype Settings modal (System | Light | Dark).
+        let labels: Vec<&str> = ThemePreference::all().iter().map(|p| p.label()).collect();
+        assert_eq!(labels, ["System", "Light", "Dark"]);
     }
 
     #[test]

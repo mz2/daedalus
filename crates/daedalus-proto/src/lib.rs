@@ -26,6 +26,8 @@ mod tests {
         assert!(!SessionStatus::Running.is_terminal());
         assert!(SessionStatus::Stalled.is_attention());
         assert!(SessionStatus::AwaitingConfirmation.is_attention());
+        assert!(SessionStatus::WaitingForInput.is_attention());
+        assert!(SessionStatus::Unknown.is_attention());
     }
 
     #[test]
@@ -38,7 +40,10 @@ mod tests {
 
     #[test]
     fn status_tokens_are_stable() {
-        assert_eq!(SessionStatus::AwaitingConfirmation.as_str(), "awaiting");
+        // Design-prototype keys per the data-model.md terminology mapping.
+        assert_eq!(SessionStatus::WaitingForInput.as_str(), "awaiting");
+        assert_eq!(SessionStatus::AwaitingConfirmation.as_str(), "confirm");
+        assert_eq!(SessionStatus::Unknown.as_str(), "unknown");
         assert_eq!(TaskStatus::InProgress.as_str(), "in_progress");
         assert_eq!(BackendKind::Workshop.as_str(), "workshop");
     }

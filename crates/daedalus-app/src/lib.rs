@@ -12,8 +12,8 @@ pub use api::{AppEvent, AppQuery, AppQueryAsync, Command, CommandResult};
 
 use daedalus_core::{Core, CoreError};
 use daedalus_proto::{
-    BackendStatus, DiscoveredSession, ResourceUsageMetric, SessionDetail, SessionId,
-    SessionSummary, TrackedTask,
+    AggregateTask, AttentionItem, BackendStatus, DiscoveredSession, EventRecord, MetricKind,
+    ResourceUsageMetric, SessionDetail, SessionId, SessionSummary, TrackedTask,
 };
 
 /// The app service. Holds an [`Arc<Core>`]; cloning is cheap and share-safe.
@@ -73,6 +73,10 @@ impl App {
             Command::ConnectDiscovered(id) => Ok(CommandResult::Connected(Box::new(
                 self.core.connect_discovered(id).await?,
             ))),
+            Command::SetIdleRate { backend, rate } => {
+                self.core.set_idle_rate(backend, rate)?;
+                Ok(CommandResult::Done)
+            }
         }
     }
 }
@@ -90,8 +94,31 @@ impl AppQuery for App {
         self.core.task_board(id).unwrap_or_default()
     }
 
+    fn all_tasks(&self) -> Vec<AggregateTask> {
+        self.core.all_tasks().unwrap_or_default()
+    }
+
     fn resource_usage(&self, id: SessionId) -> Vec<ResourceUsageMetric> {
         self.core.resource_usage(id).unwrap_or_default()
+    }
+
+    fn resource_history(
+        &self,
+        id: SessionId,
+        metric: MetricKind,
+        limit: usize,
+    ) -> Vec<ResourceUsageMetric> {
+        self.core
+            .resource_history(id, metric, limit)
+            .unwrap_or_default()
+    }
+
+    fn session_events(&self, id: SessionId) -> Vec<EventRecord> {
+        self.core.session_events(id).unwrap_or_default()
+    }
+
+    fn needs_you(&self) -> Vec<AttentionItem> {
+        self.core.needs_you().unwrap_or_default()
     }
 }
 

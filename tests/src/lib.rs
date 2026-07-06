@@ -66,6 +66,7 @@ impl Fixture {
                 },
                 capabilities: Capabilities {
                     accepts_interactive_input: true,
+                    prompt_convention: None,
                 },
             })
             .expect("register tool")
@@ -80,6 +81,7 @@ impl Fixture {
             origin: Origin::Fresh,
             worktree: None,
             backend: BackendKind::Fake,
+            limits: daedalus_proto::ResourceLimits::default(),
         }
     }
 
@@ -114,10 +116,20 @@ impl Default for Fixture {
 pub fn core_with_discovery(
     sources: Vec<Box<dyn daedalus_discovery::DiscoverySource>>,
 ) -> (Arc<Core>, TempDir) {
+    let (core, _, dir) = core_with_discovery_and_backend(sources);
+    (core, dir)
+}
+
+/// Like [`core_with_discovery`], but also hands back the fake backend so a test can drive
+/// its availability (FR-028).
+#[must_use]
+pub fn core_with_discovery_and_backend(
+    sources: Vec<Box<dyn daedalus_discovery::DiscoverySource>>,
+) -> (Arc<Core>, Arc<FakeBackend>, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(dir.path()).expect("store"));
     let backend = Arc::new(FakeBackend::new());
-    let registry = BackendRegistry::new(vec![backend as Arc<dyn Backend>]);
+    let registry = BackendRegistry::new(vec![backend.clone() as Arc<dyn Backend>]);
     let terminal = Arc::new(InMemoryTerminal::new());
     let coord = Arc::new(daedalus_discovery::DiscoveryCoordinator::new(sources));
     let core = Arc::new(Core::new(
@@ -127,7 +139,7 @@ pub fn core_with_discovery(
         Some(coord),
         CoreConfig::default(),
     ));
-    (core, dir)
+    (core, backend, dir)
 }
 
 /// A configurable in-memory discovery source for the discovery tests.
@@ -240,6 +252,7 @@ pub fn sample_tool(name: &str) -> AgenticTool {
         },
         capabilities: Capabilities {
             accepts_interactive_input: true,
+            prompt_convention: None,
         },
     }
 }

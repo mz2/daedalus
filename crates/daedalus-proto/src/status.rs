@@ -7,13 +7,15 @@ use serde::{Deserialize, Serialize};
 /// Lifecycle status of a [`crate::entities::Session`].
 ///
 /// State machine (see `data-model.md`):
-/// `Starting → Running → {Completed | Failed | Stalled | Stopped | AwaitingConfirmation}`.
+/// `Starting → Running ⇄ WaitingForInput; Running → {Completed | Failed | Stalled | Stopped |
+/// AwaitingConfirmation}`; plus `Unknown` (contact lost — derived from liveness, FR-020).
 ///
 /// Terminal states: [`Completed`](SessionStatus::Completed),
 /// [`Failed`](SessionStatus::Failed), [`Stopped`](SessionStatus::Stopped).
-/// [`Stalled`](SessionStatus::Stalled) and
-/// [`AwaitingConfirmation`](SessionStatus::AwaitingConfirmation) are non-terminal attention
-/// states the operator resolves.
+/// [`Stalled`](SessionStatus::Stalled), [`WaitingForInput`](SessionStatus::WaitingForInput),
+/// [`AwaitingConfirmation`](SessionStatus::AwaitingConfirmation), and
+/// [`Unknown`](SessionStatus::Unknown) are non-terminal attention states the operator
+/// resolves — together with `Failed` they feed the Needs-you queue (FR-021a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -21,6 +23,9 @@ pub enum SessionStatus {
     Starting,
     /// Agent is live.
     Running,
+    /// The agent is blocked on a question/approval from the operator (FR-015b). Entered
+    /// only for tools that accept interactive input, per their declared prompt convention.
+    WaitingForInput,
     /// All tracked tasks done, or operator confirmed (FR-015a, SC-004).
     Completed,
     /// Crash / non-zero exit / provisioning failure (FR-005).
@@ -31,6 +36,9 @@ pub enum SessionStatus {
     Stopped,
     /// Clean agent exit with tracked tasks unfinished — needs operator confirmation (FR-015a).
     AwaitingConfirmation,
+    /// Contact with the environment lost — last-known state preserved, never shown healthy
+    /// (FR-020). Derived from liveness, not operator-settable.
+    Unknown,
 }
 
 impl SessionStatus {
@@ -48,21 +56,27 @@ impl SessionStatus {
     pub fn is_attention(self) -> bool {
         matches!(
             self,
-            SessionStatus::Stalled | SessionStatus::AwaitingConfirmation
+            SessionStatus::Stalled
+                | SessionStatus::AwaitingConfirmation
+                | SessionStatus::WaitingForInput
+                | SessionStatus::Unknown
         )
     }
 
-    /// Stable lowercase token used by the design-system status palette and persistence.
+    /// Stable lowercase token matching the design-system status palette key
+    /// (`data-model.md` terminology mapping; persistence uses the serde token instead).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             SessionStatus::Starting => "starting",
             SessionStatus::Running => "running",
+            SessionStatus::WaitingForInput => "awaiting",
             SessionStatus::Completed => "completed",
             SessionStatus::Failed => "failed",
             SessionStatus::Stalled => "stalled",
             SessionStatus::Stopped => "stopped",
-            SessionStatus::AwaitingConfirmation => "awaiting",
+            SessionStatus::AwaitingConfirmation => "confirm",
+            SessionStatus::Unknown => "unknown",
         }
     }
 }
@@ -180,6 +194,25 @@ pub enum EventKind {
     TaskStatusChange,
     /// A lifecycle/state transition.
     Lifecycle,
+    /// A key operator action — feeds the session timeline (FR-019a).
+    OperatorAction,
+}
+
+/// A key operator action recorded on the session timeline (FR-019a):
+/// start / stop / input-sent / confirm / clean-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorAction {
+    /// The operator started the session.
+    Start,
+    /// The operator stopped the session (FR-022).
+    Stop,
+    /// The operator sent input to the agent (FR-023).
+    InputSent,
+    /// The operator confirmed completion (FR-015a).
+    ConfirmCompletion,
+    /// The operator cleaned up the environment (FR-024).
+    CleanUp,
 }
 
 /// Kind of a [`crate::entities::ResourceUsageMetric`] (FR-019).

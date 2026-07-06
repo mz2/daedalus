@@ -2,7 +2,8 @@
 
 **Crate**: `daedalus-app` over `daedalus-core`, types in `daedalus-proto`.
 **Consumed by**: `apps/desktop` (GPUI). Surface-agnostic so a future web surface reuses it unchanged.
-**Satisfies**: FR-007a (shared core, thin surfaces), FR-015/016, FR-025, plus all operator actions.
+**Satisfies**: FR-007a (shared core, thin surfaces), FR-015/016, FR-025/025a, FR-019/019a, plus all
+operator actions.
 
 The surface holds **no orchestration logic**; it issues commands, runs queries, and subscribes to an event
 stream. Because the GPUI surface is in-process Rust, this is a direct API (no FFI, no serialization
@@ -19,16 +20,34 @@ pub enum Command {
     CleanUp(SessionId),                          // FR-024
     DeleteRecord(SessionId),                     // FR-030a (operator-initiated)
     ConnectDiscovered(DiscoveredSessionId),      // FR-011 (attach via zellij)
+    SetIdleRate { backend: BackendKind, rate: Option<f64> }, // FR-021b: per-backend idle
+                                                 // rate for waiting-cost estimates;
+                                                 // persisted (survives restart); None clears
 }
 
 // Queries (read current state)
 pub trait AppQuery {
     fn fleet(&self) -> Vec<SessionSummary>;          // FR-025 unified view
-    fn session(&self, id: SessionId) -> Option<SessionDetail>;
+    fn session(&self, id: SessionId) -> Option<SessionDetail>; // incl. CaptureStats (FR-016a)
     fn task_board(&self, id: SessionId) -> Vec<TrackedTask>;   // FR-009/017
+    fn all_tasks(&self) -> Vec<AggregateTask>;                 // FR-025a aggregate board (the
+                                                               // landing view): every tracked task
+                                                               // with session/tool/backend context
+                                                               // + attention flag, grouped by task
+                                                               // status (stable inside groups);
+                                                               // filter with TasksFilter
     fn discovered(&self) -> Vec<DiscoveredSession>;            // FR-010, de-duplicated (FR-013)
-    fn backends(&self) -> Vec<BackendStatus>;                  // FR-028
-    fn resource_usage(&self, id: SessionId) -> Vec<ResourceUsageMetric>; // FR-019
+    fn backends(&self) -> Vec<BackendStatus>;                  // FR-028: one row per backend
+                                                               // with availability + stated
+                                                               // reason (degraded/unavailable)
+    fn resource_usage(&self, id: SessionId) -> Vec<ResourceUsageMetric>; // FR-019 (latest)
+    fn resource_history(&self, id: SessionId, metric: MetricKind, limit: usize)
+        -> Vec<ResourceUsageMetric>;                           // FR-019 recent trend, oldest→newest
+    fn session_events(&self, id: SessionId) -> Vec<EventRecord>; // FR-018/019a timeline, oldest
+                                                               // first (lifecycle + OperatorAction)
+    fn needs_you(&self) -> Vec<AttentionItem>;                 // FR-021a/b "Needs you" queue,
+                                                               // most answerable first; empty ⇒
+                                                               // nothing needs you
 }
 
 // Event stream (push) — drives live UI updates without polling.

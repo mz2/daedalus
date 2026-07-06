@@ -1513,6 +1513,7 @@ dependencies = [
  "daedalus-proto",
  "daedalus-sdk",
  "daedalus-zellij",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1593,6 +1594,8 @@ dependencies = [
  "daedalus-proto",
  "daedalus-sdk",
  "daedalus-zellij",
+ "rusqlite",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

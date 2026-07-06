@@ -16,6 +16,7 @@ fn no_input_tool(fx: &Fixture, name: &str) -> daedalus_proto::ToolId {
             },
             capabilities: Capabilities {
                 accepts_interactive_input: false,
+                prompt_convention: None,
             },
         })
         .unwrap()

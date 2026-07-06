@@ -61,6 +61,30 @@ async fn output_streams_board_updates_and_state_is_determined() {
 }
 
 #[tokio::test]
+async fn session_detail_carries_capture_stats_for_the_trim_notice() {
+    // FR-016a: the terminal keeps a bounded scrollback; the session record query exposes
+    // how many lines the full persisted capture holds so the surface can show
+    // "showing last N of M lines · full log persisted".
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
+
+    assert_eq!(fx.app.session(id).unwrap().capture.total_lines, 0);
+
+    let now = daedalus_proto::Timestamp::from_millis(0);
+    fx.core
+        .store()
+        .append_output(id, now, b"line 1\nline 2\n")
+        .unwrap();
+    fx.core.store().append_output(id, now, b"line 3\n").unwrap();
+    assert_eq!(fx.app.session(id).unwrap().capture.total_lines, 3);
+
+    // A trailing unterminated line still counts.
+    fx.core.store().append_output(id, now, b"partial").unwrap();
+    assert_eq!(fx.app.session(id).unwrap().capture.total_lines, 4);
+}
+
+#[tokio::test]
 async fn all_tasks_done_completes_the_session() {
     let fx = Fixture::new();
     let tool = fx.register_sample_tool("claude");

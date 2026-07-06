@@ -97,6 +97,9 @@ Build these as reusable GPUI components (port from `prototype/components.css` + 
   reason/prompt, a time-waiting readout, an **idle-cost readout** ("idle · $x.xx" at `IDLE_RATE` $/hr for
   live sandboxes; "env held" for ended sessions), and a deep-link action ("Answer in terminal" /
   "Review & confirm"). `NeedsTag` is the matching inline marker in the Tasks and Sessions lists.
+  *Implementation note (T077)*: the mock data shows "env held" on every ended row; the app derives chip
+  presence from the core's `CostIndication` (FR-021b), so failed/disconnected rows whose environment is
+  not reported as held show no cost chip — chip copy is unchanged.
 - **FailureNotice + FieldError** (`primitives.jsx`) — the brief-§8 named error pattern: bold title,
   plain-language (optionally monospace) reason, and next actions; a failure is never a dead end.
   `FieldError` is the inline field-level variant (Start form, Register-tool modal).
@@ -159,6 +162,97 @@ drives most of them (see [`storyboards.md`](./storyboards.md) for the full state
 | Disconnected / unknown | Session detail · Fleet | session `s-908` — banner, "last-known" chip, rail metrics unavailable, terminal connection-lost divider (FR-020) |
 | Excessive output | Session detail | session `s-906` — pinned trimmed-output notice |
 | Review mode (ended) | Session detail | sessions `s-903` (completed), `s-907` (stopped) — persisted output, outcome block (FR-018) |
+
+## Recorded deviations (Phase 10 validation, 2026-07-06)
+
+Validated against the served prototype (tasks board grouping/counts/filters/sub-lines; `s-911` rail;
+`s-906` trim notice; `s-908` metrics-unavailable). Copy matches exactly, including "Output trimmed —
+showing last N of M lines · full log persisted", "Live metrics unavailable — connection lost. Showing
+last-known state only.", "Output persisted — readable in review mode.", "Last-known output preserved
+with its timestamp.", "Ran for"/"Runtime", "SIGTERM (operator)"/"code N", the `NEEDS_META` inline tag
+cues, and the "Hide/Show telemetry rail" toggle. Deliberate deviations:
+
+- **Timeline labels are derived, not curated**: the prototype's `EVENTS` are hand-written mock lines
+  (e.g. "Agent started (claude -p)"). The implementation derives entries from persisted records —
+  lifecycle transitions ("Created — provisioning environment", "Agent started", status label + note),
+  `OperatorAction` events ("Started by operator", "Input sent by operator", …), and task-status
+  changes as dim notes ("T005 — Done"). Shape (status-colored node · label · timestamp) is preserved.
+- **Resource units**: the prototype shows CPU/mem/disk all as `%`; real metrics carry memory/disk in
+  bytes, so the rail renders CPU as `%` and memory/disk as human-readable bytes, disk as a meter.
+- **GPUI sparkline depth**: the headless view-model carries the full recent sample history
+  (`SPARKLINE_SAMPLES` = 28, matching the prototype's point count); the current GPUI layer summarizes
+  it (value + sample count) pending a drawn polyline, at parity with its existing rendering depth.
+- **Tasks landing filters**: the full filter state (status chips, session/tool/backend selects, text
+  query, needs-attention chip, "No tasks match" + Clear filters) lives tested in the view-model; the
+  GPUI layer currently renders the unfiltered grouped list with the needs strip on top.
+
+Validated 2026-07-06 (T083/T084/T086): hosts pill + popover (title "Hosts — availability", one dot per
+host worst-first, rows dot + kind icon + name + availability text, footnote "Availability from local
+checks, mDNS presence, and tunnel state."), Backends `host-down` ("Other hosts keep working — sessions
+elsewhere are unaffected.", "Reconnect", degraded/down `brow-note` reasons), Settings theme segment
+(System | Light | Dark, System default + pressed, "Following your operating system's Light / Dark
+appearance." only under System). Further deliberate deviations:
+
+- **`idle` availability**: prototype hosts/tunnels carry an `idle` state rendered with the degraded
+  dot. The implementation's `Availability` is `available | degraded | unavailable` (data-model);
+  idle-shaped states map to `Degraded`. The dot hues match (`AvailDot`: running/stalled/failed).
+- **Hosts popover vs. sidebar**: the tested `HostsIndicator` view-model carries the pill (dots,
+  count, accessible label) and the full popover row data; the current GPUI layer renders the pill in
+  the titlebar and the rows persistently in the sidebar footer (the prototype's sidebar-mode hosts
+  list) rather than as a click-popover, at parity with its existing depth.
+- **Idle-rate rows (FR-021b)**: the prototype Settings modal has no idle-rate control; the spec
+  requires one. Implemented as Settings rows (`IdleRateRow`, "$x.xx/hr", clearable) in the tested
+  view-model; the GPUI layer exposes a single idle-rate field for the default backend kind.
+- **Reconnect**: the prototype's host-down `Reconnect` button is a mock; the implementation surfaces
+  it on unavailable rows and availability re-resolves on the shell's refresh tick (tunnel
+  re-establishment is the operator's action, FR-032).
+
+## Recorded implementation deviations (T085)
+
+Re-validated the pre-update screens (Start T026 · Session T035 · Discover T046 · Fleet T058 ·
+Backends T059 · Tools T060 · Settings T064) against the completed prototype, state by state
+(served `design/prototype/`, Tweaks "Screen states"). **Copy now matches verbatim**, pinned by unit
+tests in `apps/desktop/src/screens/*`: all six Start-flow states (validation field errors + footer
+hints, and the FailureNotice set — "Provisioning failed" / "Concurrency limit reached — N of M
+sessions running" / "Environment unreachable" / "Couldn't create an isolated worktree", with the
+"No session was created — nothing to clean up." and "…the worktree never attached." reassurances,
+FR-005/026/002a), the worktree + secrets trust banners (FR-002a/031), every Session `StateBanner`
+(starting/awaiting/confirm/stalled/failed/unknown/completed/stopped incl. quoted prompt/summary and
+the "exited cleanly (code N) · d/t tasks · waiting w" meta line) plus the review-mode input notice
+and the prototype header-control rules (Clean-up disabled while live, Stop ↔ Confirm completion ↔
+Start similar), Discover's three always-rendered groups with per-group empty notes, "Review only" /
+"Not attachable" reasons, the FR-013 dedup footnote, the FR-014 source-dropped treatment (kept
+listed, "Last seen before the tunnel dropped…", disabled Connect with reason, group Reconnect) and
+the nothing-discovered explanation, Fleet's harmonized row (spec sub-line, progress, inline
+NeedsTag, attention-first order, full 8-status filter set, "No sessions yet" empty state), the
+Backends "No environments yet" empty state (§6.7; backed by a new `Core::environments()` query),
+Tools' first-run empty state and register-modal validation (required/duplicate name, required
+command, unbalanced quotes, mono "command not found in sandbox PATH", FR-001a), and the Settings
+local-first / outbound-only / tunnels-note / concurrency copy with the 1–16 slider bounds and the
+five prototype notification toggles. Deliberate deviations that remain:
+
+- **GPUI rendering depth**: the fixes above live in the tested headless view-models (the surface
+  contract); the current `gpui_ui.rs` layer still renders its earlier, shallower composition of
+  each screen (e.g. it does not yet draw the StateBanner, FailureNotice, or Discover grouping).
+  Follow-up: port the new view-model fields into the gpui layer screen by screen.
+- **Fleet spec sub-line**: the prototype's `row-branch` shows a spec *branch* name
+  (`specs/044-device-flow`); the implementation carries the tracked SDD artifact ref
+  (`…/tasks.md` via `SessionSummary.spec`) — same slot, real data. Row age and CPU/mem cells
+  (prototype table layout) are not yet carried; `SessionSummary` would need timestamps.
+- **Discover dropped-group header**: the prototype's warn header names the tunnel and drop time
+  ("tunnel eu-fra-1 dropped 2m ago"); discovery does not yet expose a source display-name or
+  drop timestamp, so the view-model carries `dropped: bool` + Reconnect and the per-row FR-014
+  note instead. Scanning spinners and the Rescan button stay renderer-transient (no state field).
+- **Start-failure wiring**: the `StartFailure` notices are constructed from core errors by the
+  surface; the prototype's "View host" action has no navigation target yet (Environments screen
+  row focus is a follow-up).
+- **Settings persistence**: `TunnelRow` (name/endpoint/active + Connect) and the five per-event
+  `NotificationToggle`s are modeled and tested, but core persists only the single
+  notifications-enabled flag and tunnels are operator-established outside the app (FR-032) — the
+  rows are populated by the surface, not yet by a core settings store.
+- **Session stalled duration**: the banner's "No progress for {d}" derives from the last persisted
+  event timestamp (the stall *is* the absence of newer events); the prototype uses mock
+  `lastEvent` seconds. Same meaning, derived source.
 
 ## Keyboard shortcuts (from the prototype)
 

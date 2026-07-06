@@ -16,6 +16,22 @@ impl Core {
                 "invocation program must be non-empty".into(),
             ));
         }
+        if def.capabilities.prompt_convention.is_some()
+            && !def.capabilities.accepts_interactive_input
+        {
+            return Err(CoreError::InvalidTool(
+                "a prompt convention requires accepts_interactive_input (FR-001a)".into(),
+            ));
+        }
+        if let Some(daedalus_proto::PromptConvention::PromptPattern(pattern)) =
+            &def.capabilities.prompt_convention
+        {
+            if let Err(e) = regex::Regex::new(pattern) {
+                return Err(CoreError::InvalidTool(format!(
+                    "invalid prompt pattern: {e}"
+                )));
+            }
+        }
         if self.store.tool_name_exists(&def.name)? {
             return Err(CoreError::DuplicateTool(def.name));
         }

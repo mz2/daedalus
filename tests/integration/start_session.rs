@@ -32,6 +32,7 @@ async fn as2_preexisting_session_carries_isolated_worktree() {
         origin: Origin::PreExisting,
         worktree: Some(worktree.clone()),
         backend: daedalus_proto::BackendKind::Fake,
+        limits: daedalus_proto::ResourceLimits::default(),
     };
     let id = fx.core.start_session(req).await.unwrap();
     let detail = fx.app.session(id).unwrap();
@@ -65,6 +66,7 @@ async fn preexisting_without_worktree_is_rejected() {
         origin: Origin::PreExisting,
         worktree: None,
         backend: daedalus_proto::BackendKind::Fake,
+        limits: daedalus_proto::ResourceLimits::default(),
     };
     assert!(fx.core.start_session(req).await.is_err());
     assert!(fx.app.fleet().is_empty());

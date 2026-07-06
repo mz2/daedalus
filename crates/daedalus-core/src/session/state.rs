@@ -1,6 +1,7 @@
 //! The session lifecycle state machine (`data-model.md`).
 //!
-//! `Starting → Running → {Completed | Failed | Stalled | Stopped | AwaitingConfirmation}`.
+//! `Starting → Running ⇄ WaitingForInput; Running → {Completed | Failed | Stalled |
+//! Stopped | AwaitingConfirmation}`; any live state → `Unknown` on contact loss (FR-020).
 //! Completion is reached **only** when all tracked tasks are done or the operator confirms
 //! — never on agent exit alone (FR-015a, SC-004).
 
@@ -30,6 +31,14 @@ pub enum Trigger {
     OperatorStopped,
     /// Operator confirmed completion: `AwaitingConfirmation → Completed` (FR-015a).
     OperatorConfirmed,
+    /// The agent blocked on a question/approval from the operator:
+    /// `Running → WaitingForInput` (FR-015b).
+    InputRequested,
+    /// The operator answered: `WaitingForInput → Running` (FR-015b).
+    InputProvided,
+    /// Contact with the environment was lost: any live state `→ Unknown` (FR-020). The
+    /// last-known state is preserved on the session record; reconciliation re-derives it.
+    ContactLost,
 }
 
 /// An illegal transition was attempted.
@@ -65,6 +74,15 @@ pub fn transition(
         (Running, AgentCrashed) => Failed,
         (Running, StallDetected) => Stalled,
         (Running, OperatorStopped) => Stopped,
+        (Running, InputRequested) => WaitingForInput,
+
+        // From WaitingForInput (a non-terminal attention state — FR-015b). Note there is
+        // deliberately NO `StallDetected` arm: a session waiting on input is never stalled.
+        (WaitingForInput, InputProvided) => Running,
+        (WaitingForInput, AllTasksDone) => Completed,
+        (WaitingForInput, AgentExitedWithUnfinishedTasks) => AwaitingConfirmation,
+        (WaitingForInput, AgentCrashed) => Failed,
+        (WaitingForInput, OperatorStopped) => Stopped,
 
         // From Stalled (a non-terminal attention state).
         (Stalled, ProgressResumed) => Running,
@@ -77,6 +95,15 @@ pub fn transition(
         (AwaitingConfirmation, OperatorConfirmed) => Completed,
         (AwaitingConfirmation, OperatorStopped) => Stopped,
         (AwaitingConfirmation, AllTasksDone) => Completed,
+
+        // Contact loss: any live state becomes Unknown (FR-020). Re-derivation on
+        // reconnect restores the preserved last-known state via reconciliation (not a
+        // pure transition); the operator can still stop a disconnected session.
+        (Starting | Running | WaitingForInput | Stalled | AwaitingConfirmation, ContactLost) => {
+            Unknown
+        }
+        (Unknown, ProgressResumed) => Running,
+        (Unknown, OperatorStopped) => Stopped,
 
         // Anything else (incl. all triggers from terminal states) is illegal.
         (from, trigger) => return Err(TransitionError { from, trigger }),

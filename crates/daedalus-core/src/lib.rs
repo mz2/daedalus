@@ -6,6 +6,7 @@
 //! and subscribe to [`AppEvent`]s; they hold no orchestration logic (FR-007a,
 //! `contracts/app-api.md`).
 
+pub mod attention;
 pub mod backends;
 pub mod clock;
 pub mod fleet;
@@ -84,6 +85,18 @@ pub enum CoreError {
     Backend(#[from] BackendError),
 }
 
+/// What happens when a session's environment exceeds one of its resource limits (spec
+/// edge case "Resource exhaustion"): the breach is always surfaced to the operator; the
+/// policy governs whether the session is also stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LimitPolicy {
+    /// Surface the breach and stop the session (default).
+    #[default]
+    StopSession,
+    /// Surface the breach but leave the session running.
+    NotifyOnly,
+}
+
 /// Tunable core policy.
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
@@ -91,6 +104,8 @@ pub struct CoreConfig {
     pub stall_interval_secs: u64,
     /// Maximum concurrent (non-terminal) sessions; `None` = unlimited (FR-026).
     pub concurrency_limit: Option<usize>,
+    /// Response to a session exceeding its resource limits.
+    pub limit_policy: LimitPolicy,
 }
 
 impl Default for CoreConfig {
@@ -98,6 +113,7 @@ impl Default for CoreConfig {
         Self {
             stall_interval_secs: DEFAULT_STALL_INTERVAL_SECS,
             concurrency_limit: None,
+            limit_policy: LimitPolicy::default(),
         }
     }
 }
@@ -108,6 +124,9 @@ pub(crate) struct RuntimeHandle {
     pub(crate) environment_id: EnvironmentId,
     #[allow(dead_code)]
     pub(crate) zellij_session: String,
+    /// Resource limits the environment was acquired with, enforced against observed
+    /// usage per the configured [`LimitPolicy`].
+    pub(crate) limits: daedalus_proto::ResourceLimits,
 }
 
 /// The orchestration core.
@@ -134,6 +153,13 @@ impl Core {
         config: CoreConfig,
     ) -> Self {
         let (events, _) = broadcast::channel(1024);
+        // Re-seed persisted operator configuration into the registry (FR-021b): idle
+        // rates survive restart.
+        if let Ok(rates) = store.backend_idle_rates() {
+            for (kind, rate) in rates {
+                backends.set_idle_rate(kind, Some(rate));
+            }
+        }
         Self {
             store,
             backends,
@@ -160,6 +186,15 @@ impl Core {
     /// Update the stall interval (seconds) at runtime (FR-020).
     pub fn set_stall_interval(&self, secs: u64) {
         self.config.lock().expect("poisoned").stall_interval_secs = secs;
+    }
+
+    /// Set (or clear) the per-backend idle rate used for waiting-cost estimates
+    /// (FR-021b): applied to the registry immediately and persisted so it survives
+    /// restart.
+    pub fn set_idle_rate(&self, kind: BackendKind, rate: Option<f64>) -> Result<(), CoreError> {
+        self.backends.set_idle_rate(kind, rate);
+        self.store.set_backend_idle_rate(kind, rate)?;
+        Ok(())
     }
 
     /// Subscribe to the push event stream (drives live UI updates without polling).
@@ -213,6 +248,23 @@ impl Core {
         }
     }
 
+    /// Record a key operator action on the session's persisted timeline (FR-019a):
+    /// start / stop / input-sent / confirm / clean-up.
+    pub(crate) fn record_operator_action(
+        &self,
+        id: SessionId,
+        action: daedalus_proto::OperatorAction,
+    ) {
+        let event = EventRecord {
+            id: daedalus_proto::EventId::new(),
+            session_id: id,
+            timestamp: clock::now(),
+            kind: EventKind::OperatorAction,
+            payload: EventPayload::OperatorAction { action },
+        };
+        let _ = self.store.insert_event(&event);
+    }
+
     // ----- Queries (read current state) -----
 
     /// Full detail for the session screen.
@@ -223,6 +275,9 @@ impl Core {
         let environment = self.store.get_environment(session.environment_id)?;
         let tasks = self.store.list_tasks(id)?;
         let metrics = self.store.latest_metrics(id)?;
+        let capture = daedalus_proto::CaptureStats {
+            total_lines: self.store.capture_line_count(id),
+        };
         Ok(SessionDetail {
             session,
             tool,
@@ -230,6 +285,7 @@ impl Core {
             environment,
             tasks,
             metrics,
+            capture,
         })
     }
 
@@ -243,6 +299,22 @@ impl Core {
         Ok(self.store.latest_metrics(id)?)
     }
 
+    /// Recent history of one metric for a session, oldest → newest (FR-019 trends).
+    pub fn resource_history(
+        &self,
+        id: SessionId,
+        metric: daedalus_proto::MetricKind,
+        limit: usize,
+    ) -> Result<Vec<ResourceUsageMetric>, CoreError> {
+        Ok(self.store.metric_history(id, metric, limit)?)
+    }
+
+    /// The session's persisted event records, oldest first — the lifecycle/operator-action
+    /// timeline (FR-018, FR-019a).
+    pub fn session_events(&self, id: SessionId) -> Result<Vec<EventRecord>, CoreError> {
+        Ok(self.store.list_events(id)?)
+    }
+
     /// The tail of a session's redacted captured output, for display (FR-016).
     #[must_use]
     pub fn session_output(&self, id: SessionId, max_bytes: usize) -> String {
@@ -254,11 +326,22 @@ impl Core {
         self.backends.statuses().await
     }
 
+    /// Every environment record (§6.7 — the Environments screen).
+    pub fn environments(&self) -> Result<Vec<daedalus_proto::SandboxEnvironment>, CoreError> {
+        Ok(self.store.list_environments()?)
+    }
+
     /// Discovered sessions across all sources, de-duplicated (FR-010/013/014).
     pub async fn discovered(&self) -> Vec<DiscoveredSession> {
+        self.discovered_counted().await.0
+    }
+
+    /// Like [`Self::discovered`], but also reports how many sessions were advertised from
+    /// multiple sources and de-duplicated (FR-013 — the Discover footnote).
+    pub async fn discovered_counted(&self) -> (Vec<DiscoveredSession>, usize) {
         match &self.discovery {
-            Some(coord) => coord.discover().await,
-            None => Vec::new(),
+            Some(coord) => coord.discover_counted().await,
+            None => (Vec::new(), 0),
         }
     }
 
@@ -298,12 +381,14 @@ impl Core {
         Ok(())
     }
 
-    /// Sample the backend for a session's resource usage and persist it (FR-019, T034).
+    /// Sample the backend for a session's resource usage, persist it (FR-019, T034), and
+    /// enforce the environment's resource limits per the configured [`LimitPolicy`]
+    /// (spec edge case "Resource exhaustion").
     pub async fn record_resource_usage(&self, id: SessionId) -> Result<(), CoreError> {
-        let (backend_id, env) = {
+        let (backend_id, env, limits) = {
             let rt = self.runtime.lock().expect("poisoned");
             match rt.get(&id) {
-                Some(h) => (h.backend_id, h.environment_id),
+                Some(h) => (h.backend_id, h.environment_id, h.limits),
                 None => return Ok(()),
             }
         };
@@ -312,7 +397,7 @@ impl Core {
         };
         let samples = backend.resource_usage(&env).await?;
         let now = clock::now();
-        for s in samples {
+        for s in &samples {
             let metric = ResourceUsageMetric {
                 session_id: id,
                 metric: s.metric,
@@ -321,13 +406,56 @@ impl Core {
             };
             self.store.insert_metric(&metric)?;
         }
+
+        if let Some(breached) = samples.iter().find_map(|s| exceeded_limit(s, &limits)) {
+            self.handle_limit_breach(id, breached).await?;
+        }
+        Ok(())
+    }
+
+    /// Surface a resource-limit breach to the operator and apply the configured
+    /// [`LimitPolicy`] (spec edge case "Resource exhaustion"): the breach is always
+    /// surfaced; `StopSession` also halts the agent and records the session as stopped
+    /// with the stated reason — other sessions are unaffected.
+    async fn handle_limit_breach(&self, id: SessionId, metric: &str) -> Result<(), CoreError> {
+        let reason = format!("resource limit exceeded: {metric}");
+        let session = self.store.get_session(id).map_err(map_not_found)?;
+        if session.status.is_terminal() {
+            return Ok(()); // already resolved — nothing to enforce
+        }
+        if self.config.lock().expect("poisoned").limit_policy == LimitPolicy::NotifyOnly {
+            self.emit(AppEvent::Notification(daedalus_proto::TerminalOrAbnormal {
+                session: id,
+                status: session.status,
+                note: Some(reason),
+            }));
+            return Ok(());
+        }
+
+        // Stop policy: halt the agent, then record the stop with its stated reason
+        // (record_lifecycle emits the status change + operator notification).
+        if let Some((backend_id, env, _)) = self.runtime_lookup(id) {
+            if let Some(backend) = self.backends.by_id(backend_id) {
+                let _ = backend.stop(&env).await;
+            }
+        }
+        let next = transition(session.status, Trigger::OperatorStopped)
+            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        self.store
+            .set_session_status(id, next, Some(clock::now()), Some(&reason))?;
+        self.record_lifecycle(id, next, Some(reason));
         Ok(())
     }
 
     /// Attach to a session's live terminal, redact + persist the captured stream, and
     /// return a channel whose output is the redacted stream for the surface to render
-    /// (FR-016, FR-018; contract `terminal-attach.md`, C-T4).
-    pub async fn attach_and_capture(&self, id: SessionId) -> Result<TerminalChannel, CoreError> {
+    /// (FR-016, FR-018; contract `terminal-attach.md`, C-T4). Each observed chunk is also
+    /// matched against the tool's declared prompt pattern, so a blocked agent is surfaced
+    /// as waiting-for-input (FR-015b).
+    pub async fn attach_and_capture(
+        self: &Arc<Self>,
+        id: SessionId,
+    ) -> Result<TerminalChannel, CoreError> {
         let channel = self
             .terminal
             .attach(id)
@@ -335,14 +463,15 @@ impl Core {
             .map_err(|e| CoreError::NotAttachable(e.to_string()))?;
 
         let (ui_tx, ui_rx) = mpsc::channel::<Bytes>(1024);
-        let store = Arc::clone(&self.store);
-        let events = self.events.clone();
+        let core = Arc::clone(self);
         let mut output = channel.output;
         tokio::spawn(async move {
             while let Some(chunk) = output.recv().await {
                 let redacted = redact::redact_bytes(&chunk);
-                let _ = store.append_output(id, clock::now(), &redacted);
-                let _ = events.send(AppEvent::Output {
+                let _ = core.store.append_output(id, clock::now(), &redacted);
+                // Waiting-for-input detection over the observed (redacted) stream.
+                let _ = core.observe_output(id, &String::from_utf8_lossy(&redacted));
+                let _ = core.events.send(AppEvent::Output {
                     id,
                     chunk: RedactedBytes(redacted.to_vec()),
                 });
@@ -356,6 +485,25 @@ impl Core {
             output: ui_rx,
             input: channel.input,
         })
+    }
+}
+
+/// Whether a usage sample exceeds the matching resource limit; returns the human metric
+/// name for the stated reason (e.g. "memory") when it does.
+fn exceeded_limit(
+    sample: &daedalus_backend::UsageSample,
+    limits: &daedalus_proto::ResourceLimits,
+) -> Option<&'static str> {
+    use daedalus_proto::MetricKind;
+    let (limit, name) = match sample.metric {
+        MetricKind::Cpu => (limits.cpu_cores, "cpu"),
+        MetricKind::Memory => (limits.memory_bytes.map(|b| b as f64), "memory"),
+        MetricKind::Disk => (limits.disk_bytes.map(|b| b as f64), "disk"),
+        MetricKind::Time => (limits.time_secs.map(|s| s as f64), "time"),
+    };
+    match limit {
+        Some(limit) if sample.value > limit => Some(name),
+        _ => None,
     }
 }
 

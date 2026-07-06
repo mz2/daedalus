@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use daedalus_proto::{EnvLifecycle, SessionId};
+use daedalus_proto::{EnvLifecycle, OperatorAction, SessionId};
 
 use crate::session::state::{transition, Trigger};
 use crate::{clock, map_not_found, Core, CoreError};
@@ -27,6 +27,7 @@ impl Core {
             .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
         self.store
             .set_session_status(id, next, Some(clock::now()), Some("stopped by operator"))?;
+        self.record_operator_action(id, OperatorAction::Stop);
         self.record_lifecycle(id, next, Some("stopped by operator".into()));
         Ok(())
     }
@@ -60,6 +61,14 @@ impl Core {
                     .await;
             }
         }
+
+        self.record_operator_action(id, OperatorAction::InputSent);
+
+        // Answering a waiting session returns it to Running and clears the pending
+        // prompt + waiting anchor (FR-015b).
+        if session.status == daedalus_proto::SessionStatus::WaitingForInput {
+            self.clear_waiting_for_input(id)?;
+        }
         Ok(())
     }
 
@@ -82,6 +91,7 @@ impl Core {
             .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
         self.store
             .set_session_status(id, next, Some(clock::now()), None)?;
+        self.record_operator_action(id, OperatorAction::ConfirmCompletion);
         self.record_lifecycle(id, next, None);
         Ok(())
     }
@@ -93,6 +103,7 @@ impl Core {
         if !session.status.is_terminal() {
             let _ = self.stop_session(id).await;
         }
+        self.record_operator_action(id, OperatorAction::CleanUp);
         let handle = self.runtime.lock().expect("poisoned").remove(&id);
         if let Some(handle) = handle {
             if let Some(backend) = self.backends.by_id(handle.backend_id) {

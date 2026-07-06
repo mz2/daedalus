@@ -8,8 +8,9 @@
 use bytes::Bytes;
 
 use daedalus_proto::{
-    BackendStatus, DiscoveredSession, DiscoveredSessionId, ResourceUsageMetric, SessionDetail,
-    SessionId, SessionSummary, StartSessionRequest, ToolDef, ToolId, TrackedTask,
+    AggregateTask, AttentionItem, BackendStatus, DiscoveredSession, DiscoveredSessionId,
+    EventRecord, MetricKind, ResourceUsageMetric, SessionDetail, SessionId, SessionSummary,
+    StartSessionRequest, ToolDef, ToolId, TrackedTask,
 };
 
 pub use daedalus_proto::AppEvent;
@@ -39,6 +40,14 @@ pub enum Command {
     DeleteRecord(SessionId),
     /// Connect to a discovered session by attaching via zellij (FR-011).
     ConnectDiscovered(DiscoveredSessionId),
+    /// Set (or clear with `None`) a backend's idle rate (per hour) used for waiting-cost
+    /// estimates (FR-021b); persisted so it survives restart.
+    SetIdleRate {
+        /// Which backend kind the rate applies to.
+        backend: daedalus_proto::BackendKind,
+        /// Currency-per-hour rate; `None` clears it (no cost estimate shown).
+        rate: Option<f64>,
+    },
 }
 
 /// The result of a successful [`Command`].
@@ -63,8 +72,26 @@ pub trait AppQuery {
     fn session(&self, id: SessionId) -> Option<SessionDetail>;
     /// The task board for one session (FR-009/017).
     fn task_board(&self, id: SessionId) -> Vec<TrackedTask>;
+    /// The aggregate tasks board across ALL sessions (FR-025a) — the landing view. Rows
+    /// arrive grouped by task status with a stable order inside each group; filter with
+    /// [`daedalus_proto::TasksFilter`].
+    fn all_tasks(&self) -> Vec<AggregateTask>;
     /// Latest resource usage for one session (FR-019).
     fn resource_usage(&self, id: SessionId) -> Vec<ResourceUsageMetric>;
+    /// Recent history of one metric, oldest → newest — the telemetry rail's sparklines
+    /// (FR-019 trends).
+    fn resource_history(
+        &self,
+        id: SessionId,
+        metric: MetricKind,
+        limit: usize,
+    ) -> Vec<ResourceUsageMetric>;
+    /// The session's persisted events, oldest first — the lifecycle/operator-action
+    /// timeline (FR-018, FR-019a).
+    fn session_events(&self, id: SessionId) -> Vec<EventRecord>;
+    /// The "Needs you" queue: every session blocked on the operator, most answerable
+    /// first (FR-021a/b). Empty means nothing needs you; surfaces count items for badges.
+    fn needs_you(&self) -> Vec<AttentionItem>;
 }
 
 /// Async queries that must reach out to sources/backends.

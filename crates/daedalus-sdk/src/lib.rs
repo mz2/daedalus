@@ -31,6 +31,15 @@ pub struct Advertisement {
     pub artifacts: ArtifactRef,
 }
 
+/// An SDK-signaled waiting state: the agent is blocked on a question/approval from the
+/// operator (FR-015b). Consumed by the core for tools declared with the `SdkSignal`
+/// prompt convention (FR-001a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingState {
+    /// The agent's pending question, surfaced verbatim to the operator.
+    pub question: String,
+}
+
 /// The SDK service contract.
 pub trait WorkshopSdk {
     /// Advertise this session's identity, connect info, and artifact location.
@@ -39,6 +48,12 @@ pub trait WorkshopSdk {
     /// Task states parsed from SDD artifacts (e.g. SpecKit `tasks.md` checkbox state) —
     /// never inferred from output (FR-017, Principle IV).
     fn task_states(&self) -> Vec<TrackedTask>;
+
+    /// The agent's current waiting-for-input state, if it is blocked on the operator
+    /// (FR-015b). `None` — the default — means the agent is not waiting.
+    fn waiting_state(&self) -> Option<WaitingState> {
+        None
+    }
 }
 
 /// Parse SpecKit-style `tasks.md` checkbox state into tracked tasks (FR-017, C-S1).
