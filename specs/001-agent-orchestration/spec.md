@@ -2,6 +2,9 @@
 
 **Feature Branch**: `001-agent-orchestration`  
 **Created**: 2026-06-06  
+**Updated**: 2026-07-06 — incorporates the completed design prototype (see `design/README.md` and
+`design/storyboards.md`): waiting-for-input status, Needs-you attention queue, aggregate tasks-board
+home, session event timeline, visible output trimming, system theme, degraded availability.  
 **Status**: Draft  
 **Input**: User description: "Daedalus is a tool to orchestrate and monitor agentic tools running in Canonical Workshop (https://ubuntu.com/workshop, see also project documentation) environments, and potentially in other sandbox environments (for example some suitable for macos)."
 
@@ -22,6 +25,34 @@
 - Q: For the macOS desktop app in v1, what hosts an agent session (given Workshop is Linux-only)? → A: Both — v1 supports orchestrating remote Linux Workshop environments over authenticated tunnels AND a macOS-specific local sandbox backend. Both Canonical Workshop and a macOS-specific sandbox backend are therefore required for v1.
 - Q: How is a session's "completed" terminal state determined? → A: A session is "completed" when all its tracked tasks are done, or when the operator explicitly confirms completion. The agent's process exiting is not by itself "completed": if the agent's run ends without all tracked tasks done (and without failure), the session enters an "awaiting confirmation" state that the operator resolves (confirm → completed, or stop/clean up). Agent crash or non-zero exit is recorded as failed.
 - Q: How long are ended sessions and their captured output retained in v1? → A: Retained until the operator deletes them — no automatic expiry; cleanup is operator-initiated.
+
+### Session 2026-07-06 (decisions realized in the completed design prototype)
+
+- Q: How is an agent that blocks mid-run on a question to the operator represented? → A: As a
+  first-class session status, **"waiting for input"** — distinct from "awaiting confirmation". The
+  agent's pending question is captured and shown, the session shows how long it has been waiting, and
+  answering happens in the embedded terminal with the pending question brought into view and the input
+  focused ("answer mode").
+- Q: How does the operator find everything currently blocked on them? → A: A unified **"Needs you"
+  attention queue** aggregating every session blocked on the operator — waiting for input, awaiting
+  confirmation, stalled, failed, or disconnected — each with a reason cue, the agent's question or exit
+  summary where applicable, waiting duration, and the cost of waiting. Each entry jumps in one action to
+  the session with the matching affordance focused.
+- Q: Should the cost of leaving a blocked session waiting be visible? → A: Yes. Live environments show
+  an estimated idle cost derived from a configurable per-backend idle rate; ended sessions that still
+  hold an environment are marked "environment held" instead. Informational estimates, not billing.
+- Q: What is the application's landing view? → A: An **aggregate tasks board** across all sessions
+  (every tracked task, its session and status, with attention flags) — the operator's primary question
+  is "what are the agents working on / what needs me". The session-level fleet view remains one
+  navigation action away. (Supersedes the design brief's §5 Fleet-first ordering.)
+- Q: What theme options exist? → A: Dark, light, and **system** (follows the operating system's
+  appearance); system is the default.
+- Q: How granular is host/backend availability? → A: **available / degraded / unavailable**, with a
+  stated reason for degradation (e.g., memory pressure), surfaced in the app shell's hosts indicator,
+  on source/backend chips, and on the Environments screen.
+- Q: How is excessive terminal output handled? → A: The embedded terminal stays responsive by limiting
+  displayed scrollback and showing a visible notice ("showing last N of M lines · full log persisted");
+  the persisted record still captures the full output.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -167,6 +198,40 @@ backend, and status independently. Delivers fleet-level visibility and backend p
 
 ---
 
+### User Story 6 - Clear the queue of agents blocked on you (Priority: P6)
+
+An operator glances at a single "Needs you" queue to see every session that is blocked on them — an
+agent that asked a question, a run that ended awaiting confirmation, a stalled or failed run, a
+disconnected environment — with how long each has been waiting and what the wait is costing, and jumps
+straight into the right affordance (the terminal with the agent's question focused, or the
+confirm-completion controls).
+
+**Why this priority**: This is the operator-attention layer over monitoring (US2) and control (US4):
+it makes running many concurrent agents sustainable by turning "what needs me right now?" into one
+glance and one action. It depends on session statuses, notifications, and send-input/confirmation
+already existing, so it lands after the stories it builds on.
+
+**Independent Test**: With sessions seeded in waiting-for-input, awaiting-confirmation, stalled,
+failed, and disconnected states, confirm each appears in the queue with its cue, waiting duration, and
+waiting-cost indication, and that activating an entry lands in that session with the matching
+affordance focused. Delivers a complete blocked-on-operator triage loop.
+
+**Acceptance Scenarios**:
+
+1. **Given** a running agent that accepts interactive input asks the operator a question, **When** the
+   operator opens the Needs-you queue, **Then** the session is listed as waiting for input with the
+   agent's question, how long it has been waiting, and an estimated idle cost for its live environment.
+2. **Given** an entry in the queue, **When** the operator activates it, **Then** the application opens
+   that session with the relevant affordance focused: the embedded terminal's input with the pending
+   question in view (waiting for input), or the confirm-completion controls (awaiting confirmation).
+3. **Given** a session that ended awaiting confirmation while still holding its environment, **When**
+   the operator views the queue, **Then** the entry is marked as holding an environment rather than
+   accruing live idle cost.
+4. **Given** no sessions are blocked on the operator, **When** the operator opens the queue, **Then**
+   it states that nothing needs them rather than showing a bare empty region.
+
+---
+
 ### Edge Cases
 
 - **Environment provisioning failure**: The backend cannot create or attach a sandbox — the session
@@ -178,6 +243,12 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   completion or clean up, rather than silently shown as completed.
 - **Agent stall/hang**: An agent that stops making progress or producing output for a configured
   interval is surfaced as stalled so the operator can intervene.
+- **Agent waits on input indefinitely**: A session waiting for operator input is distinct from a stall —
+  its environment stays alive and it is surfaced with its pending question, waiting duration, and idle
+  cost rather than timing out silently or being misreported as stalled.
+- **Ended session holds an environment**: A session that ended awaiting confirmation (or was not yet
+  cleaned up) and still holds its environment is visibly marked as holding it until the operator
+  confirms or cleans up.
 - **Resource exhaustion**: A sandbox that exceeds its allotted CPU/memory/disk/time is surfaced and the
   session is stopped according to the configured limit policy.
 - **Connection loss to the environment**: Loss of contact with a running sandbox is detected and
@@ -253,7 +324,8 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   task for that session.
 - **FR-009a**: The operator UI MUST follow the project's locked design system (see the UI design brief and
   the `design/` design-system reference). Concretely it MUST: present a platform-native appearance on each
-  desktop platform (macOS and Linux); support both dark and light themes; render every session and task
+  desktop platform (macOS and Linux); support dark and light themes plus a "system"
+  option that follows the operating system's appearance (the default); render every session and task
   status using a color-blind-safe status palette **paired with an icon and label** (status MUST NOT be
   conveyed by color alone); support adjustable information density; and provide keyboard-first operation
   including a command palette. (The specific UI toolkit is a planning decision; this requirement is about
@@ -274,23 +346,54 @@ backend, and status independently. Delivers fleet-level visibility and backend p
 
 **Monitoring**
 
-- **FR-015**: System MUST report each session's current status (e.g., starting, running, awaiting
-  confirmation, completed, failed, stalled, stopped) and update it as the session progresses.
+- **FR-015**: System MUST report each session's current status (e.g., starting, running, waiting for
+  input, awaiting confirmation, completed, failed, stalled, stopped, or disconnected/unknown when
+  contact with the environment is lost) and update it as the session progresses.
 - **FR-015a**: System MUST treat a session as "completed" only when all of its tracked tasks are done or
   the operator explicitly confirms completion — not on agent process exit alone. When the agent's run
   ends without all tracked tasks done and without failure, the session MUST enter an "awaiting
   confirmation" state that the operator resolves (confirm → completed, or stop/clean up); agent crash or
-  abnormal exit MUST be recorded as failed.
+  abnormal exit MUST be recorded as failed. While awaiting confirmation, the system MUST surface the
+  agent's exit summary and remaining tracked tasks, and offer confirm-completion and clean-up as the
+  primary controls.
+- **FR-015b**: When a running agent blocks on a question or approval from the operator (possible only
+  for tools that accept interactive input), the system MUST surface the session as "waiting for input" —
+  distinct from stalled and from awaiting confirmation — capturing and displaying the agent's pending
+  question and how long the session has been waiting. Answering MUST happen through the embedded
+  terminal (FR-023), and opening the session from a waiting-for-input cue MUST bring the pending
+  question into view with the terminal input focused.
 - **FR-016**: System MUST stream a running agent's output to the embedded terminal as it is produced.
+- **FR-016a**: Under very large or rapid output the embedded terminal MUST remain responsive by limiting
+  displayed scrollback, MUST show a visible notice that the display is trimmed (e.g., "showing last N of
+  M lines · full log persisted"), and the persisted record (FR-018) MUST still capture the full output.
 - **FR-017**: System MUST derive each tracked task's status from the session's spec-driven-development
   artifacts (e.g., SpecKit `tasks.md` checkbox states) in the workspace, surfaced via the in-Workshop
   SDK, and reflect changes on the task-status board as they occur.
 - **FR-018**: System MUST record a session's output, tracked-task history, and terminal outcome to a
   persisted record that remains available after the session ends.
-- **FR-019**: System MUST surface resource usage for a session's environment to the operator.
+- **FR-019**: System MUST surface resource usage for a session's environment to the operator, including
+  recent history (e.g., CPU/memory trends) alongside current values in the session view.
+- **FR-019a**: System MUST record and surface a per-session lifecycle/event timeline — status changes,
+  key operator actions (start, stop, input sent, confirm, clean-up), and notable agent events — in the
+  session view; for an ended session it MUST also present an outcome summary (final state, exit
+  reason/code, and where the persisted capture lives).
 - **FR-020**: System MUST detect and surface terminal and abnormal conditions — completion, failure,
   stall, and loss of contact with the environment.
-- **FR-021**: System MUST notify the operator when a session reaches a terminal or abnormal state.
+- **FR-021**: System MUST notify the operator when a session reaches a terminal or abnormal state, or
+  becomes blocked on the operator (waiting for input, awaiting confirmation); notifications MUST allow
+  jumping directly to the session concerned.
+- **FR-021a**: System MUST provide a unified attention queue ("Needs you") of every session blocked on
+  the operator — waiting for input, awaiting confirmation, stalled, failed, or disconnected — each entry
+  showing its reason cue (including the agent's pending question or exit summary where applicable), how
+  long it has been waiting, and its waiting-cost indication (FR-021b). Activating an entry MUST open the
+  session in one action with the matching affordance focused (terminal answer mode for waiting-for-input;
+  confirm-completion controls for awaiting confirmation). The queue MUST be reachable from persistent
+  navigation with its count surfaced in the application shell, and MUST state clearly when nothing needs
+  the operator.
+- **FR-021b**: System MUST indicate the cost of leaving a blocked session waiting: for a live
+  environment, an estimated idle cost derived from a configurable per-backend idle rate; for an ended
+  session that still holds its environment, an explicit environment-held indication. These are
+  informational estimates, not billing records.
 
 **Control / Intervention**
 
@@ -305,6 +408,10 @@ backend, and status independently. Delivers fleet-level visibility and backend p
 
 - **FR-025**: System MUST present a unified view of all sessions (active and recent), each showing its
   agentic tool, objective, source/backend, environment, and status.
+- **FR-025a**: System MUST provide an aggregate task board across all sessions — every tracked task with
+  its session, tool, backend, and status, filterable (by status, session, tool, backend) and flagging
+  tasks whose session is blocked on the operator. This aggregate board is the application's landing
+  view; the session-level fleet view (FR-025) is one navigation action away.
 - **FR-026**: System MUST support running multiple agents concurrently, up to a configurable limit,
   without sessions interfering with one another.
 - **FR-027**: System MUST support more than one kind of sandbox backend through a common backend
@@ -312,8 +419,10 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   sandbox backend, plus the ability to add further backends, all without changing the operator's
   orchestrate/monitor/control workflow. On macOS, operators MUST also be able to orchestrate remote Linux
   Workshop environments over authenticated tunnels.
-- **FR-028**: System MUST detect and clearly indicate when a configured backend is unavailable, while
-  continuing to operate sessions on other available backends.
+- **FR-028**: System MUST detect and clearly indicate when a configured backend or host is unavailable
+  or degraded (with a stated reason, e.g., resource pressure), while continuing to operate sessions on
+  other available backends and making that continuity explicit to the operator. Availability MUST be
+  visible from the application shell as well as the backends/environments view.
 
 **Persistence & Reconciliation**
 
@@ -343,10 +452,13 @@ backend, and status independently. Delivers fleet-level visibility and backend p
 ### Key Entities *(include if feature involves data)*
 
 - **Session (Agent Session / Run)**: A single invocation of an agentic tool against an objective within
-  an environment. Key attributes: unique identifier, status (starting, running, awaiting confirmation,
-  completed, failed, stalled, stopped), start/end time, terminal outcome, references to its agentic tool,
-  objective, environment, and source. "Completed" requires all tracked tasks done or operator
-  confirmation; records are retained until the operator deletes them.
+  an environment. Key attributes: unique identifier, status (starting, running, waiting for input,
+  awaiting confirmation, completed, failed, stalled, stopped, disconnected/unknown), start/end time,
+  terminal outcome, references to its agentic tool, objective, environment, and source; when waiting for
+  input: the agent's pending question and waiting-since time; when awaiting confirmation: the agent's
+  exit summary and remaining tracked tasks; optionally a reference to an external work item (e.g., a
+  GitHub issue or Jira key). "Completed" requires all tracked tasks done or operator confirmation;
+  records are retained until the operator deletes them.
 - **Agentic Tool**: An operator-registered autonomous agent that Daedalus can launch, defined
   declaratively. Key attributes: name/identifier, how to invoke the tool inside a sandbox, capabilities
   (e.g., whether it accepts interactive input).
@@ -362,14 +474,21 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   within zellij. Key attributes: identifier, lifecycle state, fresh-vs-pre-existing origin,
   isolation/resource limits, owning backend.
 - **Environment Backend (Provider)**: A source of sandbox environments (Canonical Workshop or another).
-  Key attributes: name, availability status, capabilities/limits.
+  Key attributes: name, availability status (available/degraded/unavailable, with reason),
+  capabilities/limits, optional configured idle rate used for waiting-cost estimates (FR-021b).
 - **Source / Host**: A place from which sessions are discovered — the local host, an mDNS-advertised
   host, or a connected/tunneled Workshop. Key attributes: identifier, kind (local/mDNS/tunneled),
-  availability status.
+  availability status (available/degraded/unavailable, with reason).
 - **Event / Output Record**: Captured output, actions, and lifecycle events for a session. Key
   attributes: timestamp, session reference, content, type (output, task status change, lifecycle event).
 - **Resource Usage Metric**: Observed consumption for a session's environment. Key attributes: session
   reference, metric type (CPU/memory/disk/time), value, timestamp.
+- **Attention Item ("Needs you" entry)**: A derived entry representing one session blocked on the
+  operator. Key attributes: session reference, kind (waiting for input / awaiting confirmation /
+  stalled / failed / disconnected), reason cue (including the agent's pending question or exit summary
+  where applicable), waiting duration, waiting-cost indication (estimated idle cost for a live
+  environment, or environment-held for an ended one). Derived from session state, not stored
+  independently.
 
 ## Success Criteria *(mandatory)*
 
@@ -406,6 +525,12 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   context.
 - **SC-013**: A session can be started and monitored on Linux using a Canonical Workshop environment and
   on macOS using the macOS-specific local sandbox backend, with the same operator workflow on both.
+- **SC-014**: 100% of sessions in a blocked-on-operator state (waiting for input, awaiting confirmation,
+  stalled, failed, disconnected) appear in the Needs-you queue within 5 seconds of entering that state,
+  and activating any entry lands the operator in that session with the matching affordance focused in a
+  single action.
+- **SC-015**: When an agent asks a question, the operator can read the question, the waiting duration,
+  and the waiting-cost indication from the queue (or its notification) without opening the session.
 
 ## Assumptions
 
@@ -420,10 +545,13 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   native UI technology is a planning decision; the requirement is genuinely native desktop UI plus a web
   UI over a shared core, with capability parity — not a particular framework.
 - **Operator UI follows a locked design system**: The visual and interaction design is fixed by the
-  project design system (the UI design brief plus the `design/` reference — a prototype export and its
-  design→implementation mapping). It defines platform-native skins (Ubuntu/Yaru on Linux, Cupertino on
-  macOS), dark and light themes, adjustable density, a color-blind-safe status palette paired with
-  icon+label, and keyboard-first operation with a command palette (FR-009a). Implementation ports this
+  project design system — the UI design brief plus the completed `design/` prototype (2026-07-03; see
+  `design/README.md` for the design→implementation mapping and `design/storyboards.md` for flow
+  storyboards). It defines platform-native skins (Ubuntu/Yaru on Linux, Cupertino on macOS), dark/light/
+  system themes, adjustable density, a color-blind-safe status palette paired with icon+label (including
+  the shared attention-purple for the two blocked-on-operator states, distinguished by glyph and label),
+  keyboard-first operation with a command palette, the Needs-you queue, the aggregate tasks-board home,
+  and the session telemetry rail (FR-009a and the 2026-07-06 clarifications). Implementation ports this
   design rather than inventing a new visual language. (The current build targets the native desktop
   surface first; see the implementation plan for the phased surface scope.)
 - **Sessions managed within zellij**: All agent sessions are managed inside the zellij terminal
@@ -465,4 +593,13 @@ backend, and status independently. Delivers fleet-level visibility and backend p
   condition to surface, not a normal mode.
 - **Interactive input is capability-dependent**: Not every agentic tool accepts mid-session input;
   control features that require it apply only to agents that support it, and the system degrades
-  gracefully for those that do not.
+  gracefully for those that do not. The "waiting for input" status (FR-015b) can therefore only arise
+  for tools registered as accepting interactive input.
+- **Waiting-cost rates are informational estimates**: Per-backend idle rates used for the Needs-you
+  waiting-cost indication (FR-021b) are operator-configured approximations intended to prompt timely
+  triage; Daedalus does not meter or bill actual spend.
+- **Prototype-only backend illustrations**: The design prototype seeds two backend types beyond the v1
+  scope — a GPU backend ("NVIDIA OpenShell") and an unsandboxed "on host" run mode — as design
+  exploration of the FR-027 extension point. GPU backends remain a planned extension; an unsandboxed
+  on-host mode conflicts with FR-004/SC-002 (sandbox isolation is absolute) and is explicitly **not**
+  part of this specification.

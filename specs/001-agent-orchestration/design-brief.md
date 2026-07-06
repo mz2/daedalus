@@ -10,6 +10,16 @@ screen flows for Daedalus.
 > this brief — it specifies *what screens, components, states, and flows* are needed, not visual taste.
 > Cross-references like `FR-0xx` / `SC-0xx` point back to the spec for the authoritative requirement.
 
+> **Status (2026-07-06)**: the design effort this brief commissioned is **complete** — see
+> `design/README.md` (realized design system + GPUI mapping) and `design/storyboards.md` (the §9 flow
+> storyboards). The realized design also extends this brief with features that are now specified in
+> [spec.md](./spec.md): a distinct **"waiting for input"** status (FR-015b) alongside awaiting
+> confirmation (FR-015a), a **"Needs you" attention queue** with waiting-cost indication (FR-021a/b,
+> US6), an **aggregate tasks-board home** (FR-025a — supersedes §5's Fleet-first ordering), a session
+> **event timeline + resource history** (FR-019/019a), visible **output trimming** (FR-016a), a
+> **system theme** option (FR-009a), and degraded-availability surfacing (FR-028). Where this brief and
+> the realized design differ, the spec and the realized design govern.
+
 ---
 
 ## 1. What Daedalus is
