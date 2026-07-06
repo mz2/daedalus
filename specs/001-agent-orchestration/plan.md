@@ -6,6 +6,10 @@
 FR-015b/016a/019a/021a/021b/025a, system theme, degraded availability); constitution check re-run
 against v1.1.0 (Principle IV — design fidelity); design references repointed to the canonical
 `design/prototype/`. New work is tasked in tasks.md Phase 9 (US6) and Phase 10.
+**Release gates** (spec § "Delivery Phasing & Release Gates"): before any release claims spec
+compliance — real Workshop integration (#11), SC-002 demonstrated against real backends (#11/#9/#12/#13),
+live AccessKit/keyboard wiring (#2), renderer depth (#3), and perf validation (#7). Everything else in
+Phases 1–10 is delivered and green.
 
 ## Summary
 

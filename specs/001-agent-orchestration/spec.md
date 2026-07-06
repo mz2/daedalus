@@ -320,7 +320,9 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **FR-003**: System MUST assign each session a unique identifier and bind it to its agentic tool,
   objective, and environment.
 - **FR-004**: System MUST ensure an agent's execution is confined to its sandbox and does not act on
-  the operator's host environment.
+  the operator's host environment. Confinement is delivered by the integrated environment backends
+  (never by Daedalus itself — see FR-027); demonstrating it against a **real** backend is a release
+  gate (see Delivery Phasing).
 - **FR-005**: System MUST fail a session cleanly — with a stated reason and no orphaned environment —
   when an environment cannot be provisioned or the agent cannot be started.
 - **FR-006**: Operators MUST be able to start agent sessions in a Workshop environment directly from
@@ -351,7 +353,10 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   status using a color-blind-safe status palette **paired with an icon and label** (status MUST NOT be
   conveyed by color alone); support adjustable information density; and provide keyboard-first operation
   including a command palette. (The specific UI toolkit is a planning decision; this requirement is about
-  the operator-visible design language and behavior.)
+  the operator-visible design language and behavior.) *Phasing note (2026-07-06): the keyboard-first and
+  screen-reader behaviors are implemented and tested at the view-model layer; wiring them live in the
+  GPUI renderer (AccessKit, focus, shortcuts) is follow-up work and a release gate — see Delivery
+  Phasing.*
 
 **Discovery & Connectivity**
 
@@ -447,7 +452,9 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   integrating agent-oriented sandbox runtimes — planned: NVIDIA OpenShell (Linux containers; GPU on Linux hosts),
   Anthropic `sandbox-runtime` (native macOS processes), and CodeRunner (VM isolation via Apple's
   `container` runtime); the operator picks per workload. On macOS, operators MUST be able to
-  orchestrate remote Linux Workshop environments over authenticated tunnels.
+  orchestrate remote Linux Workshop environments over authenticated tunnels. *Phasing note
+  (2026-07-06): the Workshop backend is contract-complete but its real control-surface integration is
+  follow-up work and a release gate — see Delivery Phasing.*
 - **FR-028**: System MUST detect and clearly indicate when a configured backend or host is unavailable
   or degraded (with a stated reason, e.g., resource pressure), while continuing to operate sessions on
   other available backends and making that continuity explicit to the operator. Availability MUST be
@@ -526,7 +533,9 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **SC-001**: An operator can take an agentic tool from "selected" in the UI to "running in an isolated
   sandbox" in under 2 minutes for a supported backend.
 - **SC-002**: 100% of sessions are confined to their sandbox — across normal and adversarial test
-  agents, no test agent is able to read or modify the operator's host environment.
+  agents, no test agent is able to read or modify the operator's host environment. (Verified today at
+  the backend-contract level via the `fake` backend; verification against each real backend is a
+  release gate — see Delivery Phasing.)
 - **SC-003**: A running agent's output appears in the embedded terminal within 5 seconds of being
   produced.
 - **SC-004**: 100% of sessions reach a recorded terminal state (completed, failed, stalled, or stopped),
@@ -563,6 +572,33 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **SC-015**: When an agent asks a question, the operator can read the question, the waiting duration,
   and the waiting-cost indication from the queue (or its notification) without opening the session
   (long questions may be truncated in the queue; the full question is available in the session).
+
+## Delivery Phasing & Release Gates *(recorded 2026-07-06)*
+
+The requirements above are the contract; this section records honestly which of them are **delivered
+now** versus **follow-up**, so the implementation's claims never silently exceed its behavior. Items
+marked *release gate* MUST land before any release claims spec compliance.
+
+**Delivered and verified now** (test-first; 180 passing; validated against the design prototype):
+session lifecycle incl. waiting-for-input and awaiting-confirmation (FR-001–006, 015–015b, 022–024),
+monitoring and attention incl. the Needs-you queue and waiting cost (FR-016–021b), discovery with
+dedup and unreachable handling (FR-010–014), fleet + aggregate board (FR-025–026, 028), persistence,
+reconciliation and retention (FR-029–030a), secrets redaction (FR-031), local-first posture
+(FR-032–034, SC-012), and the GPUI desktop surface with the locked design system (FR-007b, FR-008,
+FR-009/009a data layer) — all exercised locally via the `fake` backend (constitution Principle III).
+
+**Follow-up work, with tracking issues** (repo `mz2/daedalus`):
+
+| Item | Requirement(s) | Gate | Issue |
+|------|----------------|------|-------|
+| Real Canonical Workshop control-surface integration (backend currently contract-complete scaffold) | FR-027, FR-006 | **Release gate** | #11 |
+| SC-002 adversarial isolation demonstrated against each real backend | FR-004, SC-002 | **Release gate** | #11, #9/#12/#13 |
+| Live AccessKit wiring, keyboard focus/navigation, shortcuts in the GPUI renderer | FR-009a, §accessibility | **Release gate** | #2 |
+| GPUI renderer depth: draw the completed view-model states (banners, failure notices, Discover grouping, filters, sparkline, hosts popover) | FR-009a, FR-016a, FR-019a | Release gate | #3 |
+| Performance validation on real backends | SC-001/003/005/006/009/010 | Release gate | #7 |
+| Integrated agent-sandbox backends (OpenShell; Anthropic sandbox-runtime; CodeRunner) — macOS local isolation | FR-027 (amended) | Post-v1 planned | #9, #12, #13 |
+| Web UI surface | FR-007a, SC-011 | Post-v1 planned (recorded deferral) | #1 |
+| Fleet row age/resource cells; discovery source names/drop times; core settings store (tunnels, notification prefs) | FR-025, FR-014, §6.8 | Post-v1 polish | #4, #5, #6 |
 
 ## Assumptions
 
