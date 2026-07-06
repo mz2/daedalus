@@ -53,6 +53,13 @@ home, session event timeline, visible output trimming, system theme, degraded av
 - Q: How is excessive terminal output handled? → A: The embedded terminal stays responsive by limiting
   displayed scrollback and showing a visible notice ("showing last N of M lines · full log persisted");
   the persisted record still captures the full output.
+- Q: How does Daedalus detect that an agent is waiting for input? → A: From the tool's declarative
+  definition: an interactive-input-capable tool declares how its pending prompts are recognized — an
+  SDK-signaled waiting state (with the question text) where the in-environment SDK is present, otherwise
+  a declared prompt pattern matched against terminal output. Tools with no such declaration never enter
+  "waiting for input".
+- Q: Where are per-backend idle rates configured? → A: In Settings, alongside the concurrency limit;
+  they are optional — with no rate set, the queue omits the cost estimate and shows waiting time only.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -286,8 +293,9 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **FR-001**: System MUST allow an operator to start a session by selecting a registered agentic tool
   and an objective defined following a spec-driven-development tool convention (e.g., SpecKit).
 - **FR-001a**: Operators MUST be able to register agentic tools via declarative definitions (name, how
-  to invoke the tool inside a sandbox, and capabilities such as whether it accepts interactive input);
-  registered tools become selectable when starting a session.
+  to invoke the tool inside a sandbox, and capabilities such as whether it accepts interactive input
+  and, if so, how its pending input prompts are recognized — an SDK waiting signal or a declared prompt
+  pattern); registered tools become selectable when starting a session.
 - **FR-002**: System MUST let the operator choose, when starting a session, between provisioning a fresh
   isolated sandbox environment and targeting a pre-existing environment the operator selects, then start
   the selected agentic tool inside that environment.
@@ -359,9 +367,11 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **FR-015b**: When a running agent blocks on a question or approval from the operator (possible only
   for tools that accept interactive input), the system MUST surface the session as "waiting for input" —
   distinct from stalled and from awaiting confirmation — capturing and displaying the agent's pending
-  question and how long the session has been waiting. Answering MUST happen through the embedded
-  terminal (FR-023), and opening the session from a waiting-for-input cue MUST bring the pending
-  question into view with the terminal input focused.
+  question and how long the session has been waiting. Detection follows the tool's declared prompt
+  convention (FR-001a): an SDK-signaled waiting state where available, otherwise the declared prompt
+  pattern matched in terminal output; tools with no declaration never enter this state. Answering MUST
+  happen through the embedded terminal (FR-023), and opening the session from a waiting-for-input cue
+  MUST bring the pending question into view with the terminal input focused.
 - **FR-016**: System MUST stream a running agent's output to the embedded terminal as it is produced.
 - **FR-016a**: Under very large or rapid output the embedded terminal MUST remain responsive by limiting
   displayed scrollback, MUST show a visible notice that the display is trimmed (e.g., "showing last N of
@@ -391,9 +401,10 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   navigation with its count surfaced in the application shell, and MUST state clearly when nothing needs
   the operator.
 - **FR-021b**: System MUST indicate the cost of leaving a blocked session waiting: for a live
-  environment, an estimated idle cost derived from a configurable per-backend idle rate; for an ended
-  session that still holds its environment, an explicit environment-held indication. These are
-  informational estimates, not billing records.
+  environment, an estimated idle cost derived from an optional per-backend idle rate configured in
+  Settings (alongside the concurrency limit; with no rate set, waiting time is shown without a cost
+  estimate); for an ended session that still holds its environment, an explicit environment-held
+  indication. These are informational estimates, not billing records.
 
 **Control / Intervention**
 
@@ -530,7 +541,8 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   and activating any entry lands the operator in that session with the matching affordance focused in a
   single action.
 - **SC-015**: When an agent asks a question, the operator can read the question, the waiting duration,
-  and the waiting-cost indication from the queue (or its notification) without opening the session.
+  and the waiting-cost indication from the queue (or its notification) without opening the session
+  (long questions may be truncated in the queue; the full question is available in the session).
 
 ## Assumptions
 

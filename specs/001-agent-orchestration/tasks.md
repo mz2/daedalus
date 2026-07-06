@@ -12,10 +12,14 @@ native GPUI desktop app (`apps/desktop`). The core stays surface-agnostic so a w
 
 **Design note**: All GPUI screen/component tasks implement the **locked design system** in
 [`design/`](../../design/) — tokens, skins (Yaru/mac), themes, status palette, and per-screen layouts are
-specified in `design/README.md` (mapped from `design/Daedalus-Prototype-standalone.html`). Port it; the
-foundational theme/component task is T017. Screen→task mapping is in `design/README.md`.
+specified in `design/README.md`, mapped from the **canonical runnable prototype `design/prototype/`**
+(completed 2026-07-03; the single-file standalone export is superseded). Port it; the foundational
+theme/component task is T017. Screen→task mapping is in `design/README.md`. Per **constitution v1.1.0
+Principle IV**, every UI task includes a validate-against-prototype step: compare the running GPUI screen
+with the prototype rendering of the same screen/state (reproduction paths in `design/storyboards.md`) and
+record any deviation in `design/README.md` — never silent drift.
 
-**Organization**: grouped by user story (US1–US5) for independent implementation and testing.
+**Organization**: grouped by user story (US1–US6) for independent implementation and testing.
 
 **Implementation status (2026-06-19)**: the full headless stack — `daedalus-proto`, the backend
 trait + fake/Workshop/macOS backends, persistence, the state machine, redaction, discovery
@@ -31,6 +35,11 @@ matrix across both themes × both skins, legible on-pill foreground selection, s
 **T067**: the quickstart ran clean end-to-end on **Linux** (`build`/`run`/`test`/`lint` all green, 86
 tests); the **macOS** leg and the live GPUI run still need that hardware. **T066** (perf validation
 against the SC numbers) remains unchecked — it needs the real backends on real hardware.
+
+**Update (2026-07-06)**: the spec incorporated the completed design prototype (US6 "Needs you",
+FR-015b/016a/019a/021a/021b/025a, system theme, degraded availability) and the constitution added
+Principle IV (design fidelity). **Phases 9–10 below are the new, unstarted work**; T068's consistency
+verification and the paragraph above describe the pre-update state and are superseded by T087.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -225,6 +234,57 @@ session's identity/backend/status, with unavailable backends clearly marked.
 
 ---
 
+## Phase 9: User Story 6 - Clear the queue of agents blocked on you (Priority: P6)
+
+**Goal**: the "Needs you" attention queue — waiting-for-input detection, waiting-cost indication, and
+one-action jumps into the right affordance (spec US6, FR-015b, FR-021/021a/021b, SC-014/015).
+
+**Independent Test**: with sessions seeded (fake backend) in waiting-for-input, awaiting-confirmation,
+stalled, failed, and disconnected states, each appears in the queue ≤5s with cue/duration/cost, and
+activating an entry opens the session with the matching affordance focused.
+
+**Prototype counterparts** (validate per Principle IV): `design/prototype/needs.jsx` (view/tray/strip),
+`data.js needsYou()` (s-909/s-910 awaiting, s-911 confirm), answer mode in `session.jsx`
+(`design/storyboards.md` Flow 2).
+
+### Tests for User Story 6 (write FIRST, must fail) ⚠️
+
+- [ ] T069 [P] [US6] Unit tests for the proto/state-machine extensions per data-model.md — `SessionStatus::{WaitingForInput, Unknown}` (Running⇄WaitingForInput; Unknown derived from liveness; waiting-input is NOT stalled), session `pending_prompt`/`waiting_since`/`work_item_ref`, outcome exit summary, tool `PromptConvention`, backend `idle_rate`/`availability_reason` — in `tests/unit/state_machine.rs` + `tests/unit/proto_attention.rs`
+- [ ] T070 [P] [US6] Integration test: waiting-for-input detection per the tool's declared prompt convention — SDK waiting signal (with question text) and prompt-pattern fallback; non-interactive tools never enter; answering returns to Running and clears the prompt (FR-015b) in `tests/integration/waiting_input.rs`
+- [ ] T071 [P] [US6] Integration test: `AppQuery::NeedsYou` — kinds + ordering (waiting-input → confirmation → stalled → disconnected → failed), waiting duration, idle-cost/env-held/no-rate cases, ≤5s appearance, empty ⇒ "nothing needs you" (FR-021a/b, SC-014/015) in `tests/integration/needs_you.rs`
+- [ ] T072 [P] [US6] Extend `tests/integration/notifications.rs`: blocked-on-operator notifications (waiting-input, awaiting-confirmation) with jump-to-session (FR-021)
+
+### Implementation for User Story 6
+
+- [ ] T073 [US6] Implement the proto + state-machine extensions in `crates/daedalus-proto` and `crates/daedalus-core/src/session/state.rs` (makes T069 green; migration for the new session columns per data-model.md)
+- [ ] T074 [US6] Implement waiting-for-input detection in `crates/daedalus-core/src/session/outcome.rs` + SDK waiting-state surfacing in `crates/daedalus-sdk` (capture pending question; clear on `SendInput`) (FR-015b)
+- [ ] T075 [US6] Implement the Needs-you query + waiting-cost derivation (idle rate × waiting; env-held for ended-holding-env) in `crates/daedalus-core/src/attention.rs`, exposed as `AppQuery::NeedsYou` + `AppEvent`s via `daedalus-app` (FR-021a/b)
+- [ ] T076 [US6] Extend notifications to blocked-on-operator kinds with jump-to-session in core/app + `apps/desktop/src/screens/notifications.rs` (FR-021)
+- [ ] T077 [US6] Build the GPUI Needs-you surfaces in `apps/desktop/src/screens/needs.rs` — dedicated view (default), header tray, pinned strip on the tasks board, shell badge counts (purple awaiting+confirm segment) — validate all three placements + the "all caught up" empty state against the prototype
+- [ ] T078 [US6] Implement answer-mode deep links: queue/notification activation opens session detail with the pending question scrolled into view + terminal input focused; "Review & confirm" focuses the confirm-completion controls — validate against prototype answer mode (s-909, s-911)
+
+**Checkpoint**: US6 independently demoable on the fake backend; SC-014/015 measurable.
+
+---
+
+## Phase 10: Design-Alignment & New Cross-Cutting Scope (2026-07-06 spec update)
+
+**Purpose**: the remaining realized-design requirements and the Principle-IV re-validation of screens
+built before the design was completed.
+
+- [ ] T079 [P] Failing test: aggregate tasks query across all sessions with status/session/tool/backend filters + blocked-on-operator flags (FR-025a) in `tests/integration/tasks_board.rs`
+- [ ] T080 Implement the aggregate tasks query in `crates/daedalus-core/src/tasks/aggregate.rs` + build the GPUI aggregate Tasks board as the **landing view** in `apps/desktop/src/screens/tasks.rs` (Fleet becomes one click away) — validate against prototype `tasks.jsx` (board/list/table layouts)
+- [ ] T081 [P] Trimmed-output notice in the terminal pane ("showing last N of M lines · full log persisted", FR-016a; responsiveness already covered by C-T3/T027) in `apps/desktop` terminal view — validate against prototype `term-trim` (s-906)
+- [ ] T082 Refresh the session telemetry rail against the realized design (FR-019/019a): resource history sparklines, lifecycle/event timeline (incl. `EventKind::OperatorAction`), outcome block for ended sessions in `apps/desktop/src/screens/session.rs` — validate against prototype rail states (s-911 confirm, s-908 unknown/metrics-unavailable)
+- [ ] T083 [P] Degraded availability with stated reason end-to-end (FR-028): `availability_reason` through backends/discovery/core, shell hosts indicator (topbar pill + popover), availability-aware source/backend chips — validate against prototype (Backends `host-down` state, hosts indicator)
+- [ ] T084 [P] System theme option (follow OS appearance; default) in `apps/desktop/src/theme.rs` + Settings segment (FR-009a) — validate against prototype Settings
+- [ ] T085 Re-validate the pre-update screens (T026 start, T035 session, T046 discover, T058 fleet, T059 backends, T060 tools, T064 settings) against the completed prototype — incl. the start-flow failure states, Discover source-dropped/unreachable, Tools empty+validation, Backends no-envs — record deviations in `design/README.md` (constitution Principle IV; plan.md re-check 2026-07-06)
+- [ ] T086 [P] Settings: optional per-backend idle-rate configuration persisted and fed to the Needs-you cost derivation (FR-021b) in `apps/desktop/src/screens/settings.rs` + core config
+- [ ] T087 [P] Resource-limit policy test: a sandbox exceeding its CPU/memory/disk/time limits is surfaced and the session stopped per the configured policy (spec edge case) in `tests/integration/limits.rs`
+- [ ] T088 Verify spec/plan/tasks/data-model consistency after Phases 9–10 and refresh `CLAUDE.md` Recent Changes (supersedes T068's pre-update verification)
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -234,6 +294,10 @@ session's identity/backend/status, with unavailable backends clearly marked.
 - **User Stories (Ph 3–7)**: each depends only on Foundational; independently testable. Recommended priority
   order P1→P5, but stories can be parallelized across developers once Ph 2 is done.
 - **Polish (Ph 8)**: depends on the targeted stories being complete.
+- **US6 (Ph 9)**: depends on Foundational plus the US2 outcome/monitoring path (T032/T033) and the US4
+  send-input path (T050); testable on the fake backend alone.
+- **Design-alignment (Ph 10)**: T079/T080 after Foundational; T081/T082 after T035; T083 after T057/T059;
+  T084/T086 after T064; T085 after the completed prototype (done) — anytime; T088 last.
 
 ### Story dependencies / independence
 
@@ -247,8 +311,10 @@ session's identity/backend/status, with unavailable backends clearly marked.
 
 Tests (write first, must fail) → models/types → core services → backend/zellij/discovery → GPUI screen.
 
-**Cross-story UI dependency**: every GPUI screen task (T026, T035, T046, T058, T059, T060, T064) depends on
-the design-system port **T017** (theme tokens + core components); screens MUST NOT be built before T017 lands.
+**Cross-story UI dependency**: every GPUI screen task (T026, T035, T046, T058, T059, T060, T064, T077,
+T080, T081, T082) depends on the design-system port **T017** (theme tokens + core components); screens MUST
+NOT be built before T017 lands. T017 itself needs a small extension for the realized design (confirm-status
+glyph/token, needs-tag, failure-notice pattern) — fold into T077's first step.
 
 ### Parallel opportunities
 

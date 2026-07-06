@@ -1,6 +1,8 @@
 # Phase 1 Data Model: Agent Orchestration
 
 **Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Date**: 2026-06-19
+**Updated**: 2026-07-06 — spec update from the completed design prototype: `WaitingForInput` + `Unknown`
+states, waiting/confirmation session fields, Attention Item (derived), idle rates, availability reasons.
 
 Entities are derived from the spec's "Key Entities" plus the clarified lifecycle semantics. Types live in
 `daedalus-proto` (serde) and are persisted by `daedalus-core` in SQLite (output streamed to capture files).
@@ -19,15 +21,19 @@ A single invocation of an agentic tool against an objective within an environmen
 | `source_id` | SourceId | → Source/Host (local / mDNS / tunneled) |
 | `status` | SessionStatus | See state machine; persisted (FR-015) |
 | `created_at` / `started_at` / `ended_at` | Timestamp | `ended_at` set on terminal state |
-| `terminal_outcome` | Option\<Outcome\> | reason text for failed/stalled/stopped |
+| `terminal_outcome` | Option\<Outcome\> | reason text for failed/stalled/stopped; exit code + agent exit summary for AwaitingConfirmation (FR-015a) |
 | `accepts_input` | bool | mirrors the tool capability (FR-023) |
+| `pending_prompt` | Option\<String\> | the agent's question while `WaitingForInput` (FR-015b); cleared on answer |
+| `waiting_since` | Option\<Timestamp\> | set on entering `WaitingForInput` / `AwaitingConfirmation`; drives waiting duration + idle cost (FR-021a/b) |
+| `work_item_ref` | Option\<WorkItemRef\> | optional external work item (e.g. GitHub issue / Jira key) for display chips |
 
 **Validation**: a Session MUST reference an existing tool, objective, environment, and source. A Session on
 a pre-existing environment MUST carry a worktree reference (see SandboxEnvironment); absence ⇒ start fails
 (FR-002a).
 
 ### SessionStatus (state machine)
-States: `Starting → Running → {Completed | Failed | Stalled | Stopped | AwaitingConfirmation}`.
+States: `Starting → Running ⇄ WaitingForInput; Running → {Completed | Failed | Stalled | Stopped | AwaitingConfirmation}`;
+plus `Unknown` (connection lost — derived presentation state, FR-020).
 
 ```
                  ┌─────────────► Failed            (crash / non-zero exit / provision fail)
@@ -35,21 +41,40 @@ States: `Starting → Running → {Completed | Failed | Stalled | Stopped | Awai
 Starting ──► Running ──► Completed                 (all tracked tasks done — FR-015a)
    │             │  └──► AwaitingConfirmation ──► Completed   (operator confirms)
    │             │                          └──► Stopped      (operator stops/cleans up)
+   │             ├──⇄ WaitingForInput              (agent blocked on operator input — FR-015b;
+   │             │                                  back to Running when answered)
    │             ├──► Stalled                      (no output/progress for configured interval)
    │             └──► Stopped                      (operator stop — FR-022)
    └──► Failed                                     (cannot start / no environment — FR-005)
+
+any live state ──► Unknown (contact lost; last-known state preserved) ──► re-derived on reconnect/reconcile
 ```
 
 Rules:
 - `Completed` requires **all** tracked tasks done OR explicit operator confirmation — never agent exit
   alone (FR-015a, SC-004).
-- A clean agent exit with tracked tasks unfinished ⇒ `AwaitingConfirmation` (not `Completed`).
+- A clean agent exit with tracked tasks unfinished ⇒ `AwaitingConfirmation` (not `Completed`), carrying
+  the agent's exit summary; operator resolves via confirm-completion or clean-up.
+- `WaitingForInput` (FR-015b) is entered only for tools that accept interactive input, detected per the
+  tool's declared prompt convention (SDK waiting signal, else declared prompt pattern); it captures
+  `pending_prompt` + `waiting_since` and returns to `Running` when input is delivered. Distinct from
+  `Stalled` — a session waiting on input MUST NOT be reported stalled.
 - Agent crash / abnormal exit ⇒ `Failed`; no output/progress for the configured stall interval ⇒ `Stalled`
   (operator-configurable; **default 120s**).
-- Loss of contact with the environment is surfaced and last-known state preserved (FR-020); reconciliation
-  on restart re-derives status (FR-030).
-- Terminal states: `Completed`, `Failed`, `Stopped`. `Stalled` and `AwaitingConfirmation` are non-terminal
-  attention states the operator resolves.
+- Loss of contact with the environment ⇒ `Unknown`: last-known state preserved and displayed as
+  connection-lost, never as healthy (FR-020); reconciliation on restart/reconnect re-derives status
+  (FR-030). `Unknown` is derived from liveness, not an operator-settable state.
+- Terminal states: `Completed`, `Failed`, `Stopped`. `Stalled`, `WaitingForInput`, `AwaitingConfirmation`,
+  and `Unknown` are non-terminal attention states the operator resolves — all four feed the Needs-you
+  queue (FR-021a) together with `Failed`.
+
+**Terminology mapping** (one concept, three vocabularies — keep aligned):
+
+| spec.md | `daedalus-proto` | design prototype key | UI label |
+|---------|------------------|----------------------|----------|
+| waiting for input | `WaitingForInput` | `awaiting` | "Waiting for input" |
+| awaiting confirmation | `AwaitingConfirmation` | `confirm` | "Awaiting confirmation" |
+| disconnected/unknown | `Unknown` | `unknown` | "Connection lost" |
 
 ### AgenticTool
 Operator-registered, declaratively defined (FR-001a).
@@ -59,7 +84,7 @@ Operator-registered, declaratively defined (FR-001a).
 | `id` | ToolId | |
 | `name` | String | unique display/identifier |
 | `invocation` | InvocationSpec | how to launch inside a sandbox |
-| `capabilities` | Capabilities | e.g. `accepts_interactive_input: bool` |
+| `capabilities` | Capabilities | `accepts_interactive_input: bool`; when true, `prompt_convention: PromptConvention` (`SdkSignal` \| `PromptPattern(regex)`) — drives `WaitingForInput` detection (FR-001a/015b) |
 
 **Validation**: `name` non-empty and unique; `invocation` well-formed ⇒ otherwise registration fails with a
 reason (design brief §6.6).
@@ -105,7 +130,9 @@ A source of sandbox environments behind the common abstraction (FR-027).
 | `id` | BackendId | |
 | `kind` | BackendKind | `Workshop | MacosSandbox | Fake | …` |
 | `availability` | Availability | `Available | Degraded | Unavailable` (FR-028) |
+| `availability_reason` | Option\<String\> | stated reason when degraded/unavailable (FR-028), e.g. "high memory pressure" |
 | `capabilities` | BackendCapabilities | limits, supports-fresh, supports-preexisting |
+| `idle_rate` | Option\<MoneyPerHour\> | optional operator-configured rate (Settings) for waiting-cost estimates (FR-021b); `None` ⇒ no cost shown |
 
 ### Source / Host
 Where a session is discovered (FR-010).
@@ -115,6 +142,7 @@ Where a session is discovered (FR-010).
 | `id` | SourceId | |
 | `kind` | SourceKind | `Local | Mdns | TunneledWorkshop` |
 | `availability` | Availability | unreachable when host stops advertising / tunnel drops (FR-014) |
+| `availability_reason` | Option\<String\> | stated reason when degraded/unavailable, surfaced in the shell hosts indicator (FR-028) |
 
 ### EventRecord
 Captured output, task-status changes, and lifecycle events for a session (FR-018).
@@ -124,7 +152,7 @@ Captured output, task-status changes, and lifecycle events for a session (FR-018
 | `id` | EventId | monotonic per session |
 | `session_id` | SessionId | |
 | `timestamp` | Timestamp | |
-| `kind` | EventKind | `Output | TaskStatusChange | Lifecycle` |
+| `kind` | EventKind | `Output | TaskStatusChange | Lifecycle | OperatorAction` (start/stop/input-sent/confirm/clean-up — feeds the session timeline, FR-019a) |
 | `payload` | EventPayload | output goes to capture file (ref), not inline blob, for volume |
 
 **Rule**: output passes through redaction before persistence — secrets are never written (FR-031, R9).
@@ -138,6 +166,23 @@ Observed consumption for a session's environment (FR-019).
 | `metric` | MetricKind | `Cpu | Memory | Disk | Time` |
 | `value` | f64 | |
 | `timestamp` | Timestamp | |
+
+Recent samples are retained per session so the session view can show short-horizon history/trends
+(FR-019); persistence granularity is an implementation choice.
+
+### AttentionItem ("Needs you" entry) — derived, not persisted
+Computed from live session state for the Needs-you queue (FR-021a/b, US6); never stored.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `session_id` | SessionId | activation deep-links to the session with the matching affordance focused |
+| `kind` | AttentionKind | `WaitingForInput | AwaitingConfirmation | Stalled | Failed | Disconnected` |
+| `cue` | String | reason line (pending question for input; exit summary for confirmation; stall/fail/drop reason otherwise) |
+| `waiting` | Duration | now − `waiting_since` (or time in state) |
+| `cost` | CostIndication | `Idle(estimate)` for a live env with a configured backend `idle_rate`; `EnvHeld` for an ended session holding its env; `None` when no rate configured |
+
+Ordering: `WaitingForInput` → `AwaitingConfirmation` → `Stalled` → `Disconnected` → `Failed` (most
+answerable first), newest-waiting last within a kind (matches the design prototype's `needsYou()`).
 
 ## Relationships
 

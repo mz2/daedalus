@@ -132,15 +132,15 @@ Build these as reusable GPUI components (port from `prototype/components.css` + 
 
 | Screen (prototype) | Spec / design-brief | tasks.md |
 |--------------------|---------------------|----------|
-| Tasks board (home) | task-status board, FR-009/017 | T031, T035 |
-| Needs you (queue) | operator-attention queue; extends §6.1 global status + §8 stalled/awaiting patterns, FR-015a/021 | — new, needs a task |
-| Fleet (list/table) | US5, §6.2, FR-025 | T058 |
-| Session detail (split + telemetry rail) | US2/US4, §6.4, FR-019 | T035, T052 |
-| Start session | US1, §6.3, FR-005/026/002a | T026 |
-| Discover | US3, §6.5, FR-010–014 | T046 |
-| Tools | §6.6, FR-001a | T060 |
-| Environments / Backends | §6.7, FR-027/028 | T059 |
-| Settings (modal) | §6.8, FR-032 | T064 |
+| Tasks board (home, aggregate) | FR-025a, FR-009/017 | T031, T035; aggregate home: T079–T080 |
+| Needs you (queue) | US6, FR-015b/021/021a/021b | T069–T078 |
+| Fleet (list/table) | US5, §6.2, FR-025 | T058 (re-validate: T085) |
+| Session detail (split + telemetry rail) | US2/US4, §6.4, FR-019/019a/016a | T035, T052; rail/trim refresh: T081–T082 |
+| Start session | US1, §6.3, FR-005/026/002a | T026 (re-validate: T085) |
+| Discover | US3, §6.5, FR-010–014 | T046 (re-validate: T085) |
+| Tools | §6.6, FR-001a | T060 (re-validate: T085) |
+| Environments / Backends | §6.7, FR-027/028 | T059; degraded+shell indicator: T083 |
+| Settings (modal) | §6.8, FR-032, FR-021b | T064; system theme: T084; idle rates: T086 |
 
 ## Cross-cutting states (brief §8) — where each is demonstrated
 

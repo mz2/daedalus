@@ -1,6 +1,6 @@
 # daedalus Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-06-19
+Auto-generated from all feature plans. Last updated: 2026-07-06
 
 ## Active Technologies
 
@@ -52,6 +52,14 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 
 ## Recent Changes
 
+- 001-agent-orchestration (design + spec update 2026-07-06): the Claude Design prototype was **completed**
+  (canonical runnable source now `design/prototype/`; the standalone export is superseded) — Needs-you
+  attention queue, `awaiting`(waiting-for-input) + `confirm`(FR-015a) statuses, telemetry rail, Discover
+  screen with source-drop, start/backends/tools failure states, storyboards. spec.md gained US6 +
+  FR-015b/016a/019a/021a/021b/025a (+ SC-014/015); data-model gained `WaitingForInput`/`Unknown`,
+  AttentionItem, prompt conventions, idle rates. Constitution is v1.1.0 (Principle IV: validate UI
+  implementation designs against the HTML prototypes). **New unstarted work: tasks.md Phases 9–10
+  (T069–T088)** — everything through Phase 8 remains green as below.
 - 001-agent-orchestration (implemented 2026-06-19): Cargo workspace built out test-first. Headless stack
   complete and green (`cargo test --workspace`: 86 passing; `clippy -D warnings` clean) — `daedalus-proto`,
   `daedalus-backend` (+ `fake`/`workshop`/`macos`), SQLite persistence + file-backed capture, the session

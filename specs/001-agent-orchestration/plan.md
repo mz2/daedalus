@@ -2,6 +2,10 @@
 
 **Branch**: `001-agent-orchestration` | **Date**: 2026-06-19 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/001-agent-orchestration/spec.md`
+**Updated**: 2026-07-06 — spec incorporated the completed design prototype (US6 "Needs you",
+FR-015b/016a/019a/021a/021b/025a, system theme, degraded availability); constitution check re-run
+against v1.1.0 (Principle IV — design fidelity); design references repointed to the canonical
+`design/prototype/`. New work is tasked in tasks.md Phase 9 (US6) and Phase 10.
 
 ## Summary
 
@@ -22,11 +26,15 @@ GPUI view (via `alacritty_terminal`) attached to zellij. The **web surface is de
 implementation (operator decision, 2026-06-19); the core stays surface-agnostic so a web UI can be added
 later. See [research.md](./research.md) §R1 for the decision and the recorded spec deviation.
 
-The **visual design is locked** to the prototype design system in [`design/`](../../design/) (canonical
-export `design/Daedalus-Prototype-standalone.html`, mapped to GPUI in `design/README.md`): two platform-native
-skins (Yaru/Ubuntu → Linux, Cupertino → macOS), dark+light themes, adjustable density, and a color-blind-safe
-status palette (paired with icon+label) that maps 1:1 to `SessionStatus`/`TaskStatus`. The GPUI surface ports
-these tokens and components rather than inventing new ones.
+The **visual design is locked** to the prototype design system in [`design/`](../../design/) — canonical
+source `design/prototype/` (completed 2026-07-03; runnable HTML/JSX), mapped to GPUI in `design/README.md`
+with flow storyboards in `design/storyboards.md`; the older single-file export
+`Daedalus-Prototype-standalone.html` is superseded. Two platform-native skins (Yaru/Ubuntu → Linux,
+Cupertino → macOS), dark/light/system themes, adjustable density, and a color-blind-safe status palette
+(paired with icon+label) that maps 1:1 to `SessionStatus`/`TaskStatus`, plus the realized Needs-you queue,
+telemetry rail, and cross-cutting failure states. The GPUI surface ports these tokens and components rather
+than inventing new ones, and per constitution Principle IV every screen/state implementation is validated
+against the prototype rendering.
 
 ## Technical Context
 
@@ -71,13 +79,14 @@ deviation from FR-007a/SC-011, tracked in Complexity Tracking below.
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-Constitution v1.0.0 — three principles plus Quality Gates.
+Constitution v1.1.0 — four principles plus Quality Gates.
 
 | Principle | How this plan satisfies it | Status |
 |-----------|----------------------------|--------|
 | **I. Red/Green TDD (NON-NEGOTIABLE)** | Every contract (backend trait, SDK advertisement protocol, discovery, persistence) and every behavior (session state machine, dedup, reconciliation, isolation) gets a failing test before implementation. tasks.md will order test tasks ahead of their implementation tasks. | ✅ PASS |
 | **II. Strict Linting — Warnings Are Errors** | Rust: `cargo clippy -D warnings` + `rustfmt --check` in CI; no blanket `#[allow]`. UI: linter chosen with the toolkit (`dart analyze`/`flutter analyze` for Flutter, or `clippy -D warnings` for Slint/egui). Web assets (if any) linted likewise. | ✅ PASS |
 | **III. Locally Testable Runtime Environment** | A documented single-command build/run path (quickstart.md). A `daedalus-backend-fake` in-memory backend lets sessions, discovery, persistence, and lifecycle be exercised locally **without** Workshop or remote access; the macOS sandbox backend is locally testable on macOS. Workshop integration is verified via the fake backend + contract tests where Workshop is unavailable. | ✅ PASS |
+| **IV. Design Fidelity to the Prototype** (added in v1.1.0) | The canonical runnable prototype is `design/prototype/` (screens, cross-cutting states, both themes × skins), catalogued in `design/README.md` and reproducible via `design/storyboards.md`. Every GPUI screen/component task names its prototype counterpart and includes a validate-against-prototype step; deviations are recorded in `design/README.md`, and UI with no prototype counterpart gets a prototype first (as done for the Needs-you queue before US6 was tasked). | ✅ PASS |
 
 **Quality Gates** (tests green, lint clean, locally exercised, no silent scope-narrowing) are encoded into
 the task plan and review checklist. **No violations** — Complexity Tracking is empty.
@@ -85,6 +94,11 @@ the task plan and review checklist. **No violations** — Complexity Tracking is
 Re-check after Phase 1 design: see end of [research.md](./research.md) / data-model — no new violations
 introduced (the workspace decomposition and the fake backend serve Principles III and pluggability, not
 gold-plating).
+
+Re-check 2026-07-06 (constitution v1.1.0 + spec update): Principle IV added above — PASS as planned;
+retroactively, already-built screens (T026/T035/T046/T058–T060/T064) MUST be re-validated against the
+completed prototype as part of the Phase 9/10 work since the realized design postdates them (tracked as
+T085).
 
 ## Project Structure
 
@@ -130,9 +144,10 @@ apps/
         └── screens/                #   tasks(home), fleet, session, start, discover, tools, backends, settings
 
 design/                             # Visual source of truth (prototype + design→GPUI mapping)
-├── Daedalus-Prototype-standalone.html  # canonical latest export
-├── README.md                       # design system → GPUI mapping (tokens, components, screens)
-└── prototype/                      # unpacked readable source (css/jsx/assets/screenshots)
+├── prototype/                      # CANONICAL runnable source (css/jsx/assets/screenshots, 2026-07-03)
+├── README.md                       # design system → GPUI mapping (tokens, components, screens, states)
+├── storyboards.md                  # flow storyboards + cross-cutting state matrix
+└── Daedalus-Prototype-standalone.html  # older single-file export (superseded)
 
 tests/
 ├── contract/                       # Backend trait, SDK protocol, discovery, persistence
