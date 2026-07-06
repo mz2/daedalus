@@ -610,8 +610,11 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **Waiting-cost rates are informational estimates**: Per-backend idle rates used for the Needs-you
   waiting-cost indication (FR-021b) are operator-configured approximations intended to prompt timely
   triage; Daedalus does not meter or bill actual spend.
-- **Prototype-only backend illustrations**: The design prototype seeds two backend types beyond the v1
-  scope — a GPU backend ("NVIDIA OpenShell") and an unsandboxed "on host" run mode — as design
-  exploration of the FR-027 extension point. GPU backends remain a planned extension; an unsandboxed
-  on-host mode conflicts with FR-004/SC-002 (sandbox isolation is absolute) and is explicitly **not**
-  part of this specification.
+- **Backends beyond v1 scope**: The design prototype seeds two backend types beyond the v1 scope as
+  exercises of the FR-027 extension point. (a) **NVIDIA OpenShell** — a real product: NVIDIA's
+  open-source runtime for executing autonomous AI agents in kernel-level sandboxes (seccomp/Landlock/
+  network namespaces) under declarative YAML policy, with GPU-capable sandboxes via the NVIDIA
+  Container Toolkit — is a natural future Daedalus backend, tracked as a planned extension
+  (repo issue #9); it is not part of v1. (b) An unsandboxed **"on host"** run mode conflicts with
+  FR-004/SC-002 (sandbox isolation is absolute) and is explicitly **not** part of this specification;
+  pursuing it would require an explicit spec amendment first (decision record: repo issue #10).
