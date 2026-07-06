@@ -27,7 +27,7 @@ const LOG_LINES = [
   ["__cursor__", ""],
 ];
 
-function Terminal({ session, interactive, ended }) {
+function Terminal({ session, interactive, ended, focusPrompt }) {
   const baseLines = window.DATA.pickTerminal(session.id);
   const tabs = [
     { name: "agent", lines: baseLines },
@@ -35,6 +35,7 @@ function Terminal({ session, interactive, ended }) {
     { name: "logs", lines: LOG_LINES },
   ];
   const scrollRef = React.useRef(null);
+  const inputRef = React.useRef(null);
   const [atBottom, setAtBottom] = React.useState(true);
   const [input, setInput] = React.useState("");
   const [tab, setTab] = React.useState(0);
@@ -44,6 +45,22 @@ function Terminal({ session, interactive, ended }) {
     if (el) el.scrollTop = el.scrollHeight;
     setAtBottom(true);
   }, [session.id, tab]);
+
+  // Answer flow: drop straight onto the agent's prompt and focus the input.
+  React.useEffect(() => {
+    if (!focusPrompt) return;
+    setTab(0);
+    const raf = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el) {
+        const p = el.querySelector(".tl-prompt");
+        el.scrollTop = p ? Math.max(0, p.offsetTop - 48) : el.scrollHeight;
+        setAtBottom(!p);
+      }
+      if (inputRef.current) inputRef.current.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusPrompt, session.id]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -61,8 +78,9 @@ function Terminal({ session, interactive, ended }) {
       <div className="term-bar">
         <div className="term-bar-l">
           <span className="term-title"><Icon name="bolt" size={12} /> Terminal</span>
-          {!ended && <span className="term-live"><span className="stat-dot live" style={{ background: "var(--st-running)" }} /> live</span>}
+          {!ended && session.status !== "unknown" && <span className="term-live"><span className="stat-dot live" style={{ background: "var(--st-running)" }} /> live</span>}
           {ended && <span className="chip">persisted output</span>}
+          {session.status === "unknown" && <span className="chip warnsoft">last-known output</span>}
         </div>
         <div className="term-bar-r">
           <button className="iconbtn" title={"Live zellij session. Tabs and panes are managed by zellij itself — switch tabs with Alt+←/→ (or click below), split panes with Ctrl+p. Daedalus just streams the view and passes your keystrokes through."}><Icon name="info" size={14} /></button>
@@ -71,7 +89,13 @@ function Terminal({ session, interactive, ended }) {
           <button className="iconbtn" title="Jump to latest (⌘↓)" onClick={jump}><Icon name="jumpdown" size={14} /></button>
         </div>
       </div>
-      <div className="term-body" ref={scrollRef} onScroll={onScroll}>
+      <div className={`term-body${focusPrompt ? " focus-prompt" : ""}`} ref={scrollRef} onScroll={onScroll}>
+        {tab === 0 && session.trimmed && (
+          <div className="term-trim" title="The terminal keeps a bounded scrollback so it stays responsive; the complete output is persisted to disk.">
+            <Icon name="doc" size={12} />
+            <span>Output trimmed — showing last {session.trimmed.shown.toLocaleString("en-US")} of {session.trimmed.total.toLocaleString("en-US")} lines · full log persisted</span>
+          </div>
+        )}
         <pre>
           {lines.map((ln, i) => {
             if (ln[0] === "__cursor__") return <div key={i} className="tl"><span className="term-cursor" /></div>;
@@ -91,11 +115,12 @@ function Terminal({ session, interactive, ended }) {
         <span className="zspacer" />
         <span className="zhint">Alt&nbsp;←/→ tabs · Ctrl&nbsp;p pane</span>
       </div>
-      <div className="term-input-wrap">
+      <div className={`term-input-wrap${focusPrompt && interactive && !ended ? " answering" : ""}`}>
         {interactive && !ended ? (
           <div className="term-input">
             <span className="term-prompt-glyph">›</span>
-            <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Send input to the focused pane…  (↵ to send)"
+            <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
+              placeholder={focusPrompt && session.status === "awaiting" ? `Reply to ${session.toolName}…  (↵ to send)` : "Send input to the focused pane…  (↵ to send)"}
               onKeyDown={(e) => { if (e.key === "Enter") setInput(""); }} />
             <button className="btn sm tinted" disabled={!input.trim()}><Icon name="send" size={12} /> Send</button>
           </div>
@@ -132,7 +157,7 @@ function TaskCard({ t }) {
   );
 }
 
-function TaskBoard({ session, compact, ended }) {
+function TaskBoard({ session, compact, ended, footer }) {
   const { done, total } = taskCounts(session.tasks);
   const pct = total ? Math.round((done / total) * 100) : 0;
   const [collapsed, setCollapsed] = React.useState(false);
@@ -177,6 +202,7 @@ function TaskBoard({ session, compact, ended }) {
           ))}
         </div>
       )}
+      {footer}
     </section>
   );
 }
@@ -208,11 +234,13 @@ function BoardChecklist({ session }) {
 function SessionMetrics({ session, ended }) {
   const [open, setOpen] = React.useState(false);
   const unknown = session.status === "unknown";
-  const events = [
-    { t: ended ? "now" : "now", label: ended ? (session.exit || "Session ended") : "Persisting device codes (T005)", tone: ended ? "dim" : "accent" },
-    { t: fmtAgo(session.lastEvent), label: session.status === "stalled" ? "No output — possible stall" : "T004 completed", tone: session.status === "stalled" ? "warn" : "ok" },
-    { t: fmtDur(session.started) + " ago", label: "Session started", tone: "dim" },
-  ];
+  // Last three lifecycle events, newest first (compact footer reads top-down).
+  const events = window.DATA.sessionEvents(session).slice(-3).reverse().map((e) => ({
+    t: e.t, label: e.label,
+    tone: e.kind === "action" ? "accent" : e.kind === "note" ? "dim"
+      : ["stalled", "failed", "unknown"].includes(e.st) ? "warn"
+      : e.st === "running" ? "ok" : "dim",
+  }));
   return (
     <div className={`smetrics${open ? " open" : ""}`}>
       <button className="sm-bar" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -279,27 +307,41 @@ function Sparkline({ seed = 1, color = "var(--accent)" }) {
   );
 }
 
+// A sparkline-backed resource readout (CPU / memory history); value in mono.
+function RailSpark({ icon, label, value, seed }) {
+  const cl = value == null ? "" : value > 85 ? "var(--st-failed)" : value > 65 ? "var(--st-stalled)" : "var(--accent)";
+  return (
+    <div className="rail-spark">
+      <div className="rs-head">
+        <span className="rs-label"><Icon name={icon} size={12} /> {label}</span>
+        <span className="rs-val">{value == null ? "—" : value + "%"}</span>
+      </div>
+      <Sparkline seed={seed} color={cl || "var(--accent)"} />
+    </div>
+  );
+}
+
+const RAIL_EV_NODE = (e) =>
+  e.kind === "status" && e.st ? { background: `var(--st-${e.st})` }
+  : e.kind === "action" ? { background: "var(--accent)" }
+  : undefined;
+
 function TelemetryRail({ session, ended }) {
   const unknown = session.status === "unknown";
-  const events = [
-    { t: "now", label: ended ? "Session ended" : "Persisting device codes (T005)", tone: ended ? "dim" : "accent" },
-    { t: fmtAgo(session.lastEvent), label: session.status === "stalled" ? "No output — possible stall" : "T004 completed", tone: session.status === "stalled" ? "warn" : "ok" },
-    { t: "8m ago", label: "Gateway middleware wired", tone: "" },
-    { t: "12m ago", label: "Environment provisioned", tone: "" },
-    { t: fmtDur(session.started) + " ago", label: "Session started", tone: "dim" },
-  ];
+  const events = window.DATA.sessionEvents(session); // oldest → newest (newest last)
+  const outcome = ended || unknown;
   return (
-    <aside className="rail">
+    <aside className="rail" aria-label="Session telemetry">
       <div className="rail-sect">
         <GroupLabel>Resources</GroupLabel>
         {unknown ? (
-          <div className="rail-unknown"><Icon name="warning" size={13} /> Live metrics unavailable — connection lost.</div>
+          <div className="rail-unknown"><Icon name="warning" size={13} /> Live metrics unavailable — connection lost. Showing last-known state only.</div>
         ) : (
           <div className="rail-res card" style={{ padding: "12px 13px", display: "grid", gap: 11 }}>
-            <ResLabeled icon="cpu" label="CPU" value={session.cpu} seed={3} />
-            <ResLabeled icon="mem" label="Memory" value={session.mem} seed={5} />
+            <RailSpark icon="cpu" label="CPU" value={session.cpu} seed={3} />
+            <RailSpark icon="mem" label="Memory" value={session.mem} seed={5} />
             <ResLabeled icon="disk" label="Disk" value={session.disk} unit="%" seed={2} />
-            <div className="rail-time"><Icon name="clock" size={12} /> Runtime <b>{fmtDur(session.started)}</b></div>
+            <div className="rail-time"><Icon name="clock" size={12} /> {ended ? "Ran for" : "Runtime"} <b>{fmtDur(ended ? session.started - (session.ended ?? 0) : session.started)}</b></div>
           </div>
         )}
       </div>
@@ -307,13 +349,35 @@ function TelemetryRail({ session, ended }) {
         <GroupLabel>Timeline</GroupLabel>
         <div className="timeline">
           {events.map((e, i) => (
-            <div key={i} className={`tlx tlx-${e.tone}`}>
-              <span className="tlx-node" />
+            <div key={i} className={`tlx${e.kind === "note" ? " tlx-dim" : ""}`}>
+              <span className="tlx-node" style={RAIL_EV_NODE(e)} />
               <div className="tlx-body"><span className="tlx-label">{e.label}</span><span className="tlx-time">{e.t}</span></div>
             </div>
           ))}
         </div>
       </div>
+      {outcome && (
+        <div className="rail-sect">
+          <GroupLabel>Outcome</GroupLabel>
+          <div className="rail-outcome card">
+            <div className="ro-row">
+              <span className="ro-k">State</span>
+              <span className={`ro-v stat--${session.status}`} style={{ color: "var(--c)" }}>{window.DATA.STATUS_LABEL[session.status]}</span>
+            </div>
+            {ended && (
+              <div className="ro-row">
+                <span className="ro-k">Exit</span>
+                <span className="ro-v mono">{session.status === "stopped" ? "SIGTERM (operator)" : `code ${session.exitCode ?? (session.status === "failed" ? 1 : 0)}`}</span>
+              </div>
+            )}
+            {(session.exit || session.note) && <div className="ro-reason">{session.exit || session.note}</div>}
+            <div className="ro-note">
+              <Icon name="doc" size={11} />
+              {unknown ? "Last-known output preserved with its timestamp." : "Output persisted — readable in review mode."}
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -338,6 +402,29 @@ function ResLabeled({ icon, label, value, unit = "%", seed }) {
 // ── State banner ────────────────────────────────────────────────────────────
 function StateBanner({ session }) {
   const s = session.status;
+  if (s === "awaiting") return (
+    <div className="banner banner-await">
+      <span className="ban-glyph stat-glyph" style={{ width: 16, height: 16 }}><StatusGlyph status="awaiting" size={16} /></span>
+      <div><b>{session.toolName} is waiting for your answer.</b> <span className="ban-q">“{session.prompt}”</span></div>
+      <div className="banner-acts"><span className="ban-wait"><Icon name="clock" size={12} /> waiting {fmtDur(session.waitingFor)}</span></div>
+    </div>
+  );
+  if (s === "confirm") {
+    const { done, total } = taskCounts(session.tasks);
+    return (
+      <div className="banner banner-confirm">
+        <span className="ban-glyph stat-glyph" style={{ width: 16, height: 16 }}><StatusGlyph status="confirm" size={16} /></span>
+        <div>
+          <b>{session.toolName} exited cleanly with tracked tasks unfinished.</b> <span className="ban-q">“{session.summary}”</span>
+          <div className="ban-meta">exited cleanly (code {session.exitCode ?? 0}) · {done}/{total} tasks · waiting {fmtDur(session.waitingFor)}</div>
+        </div>
+        <div className="banner-acts">
+          <button className="btn sm primary"><Icon name="check" size={12} /> Confirm completion</button>
+          <button className="btn sm"><Icon name="cleanup" size={12} /> Clean up</button>
+        </div>
+      </div>
+    );
+  }
   if (s === "stalled") return (
     <div className="banner banner-warn">
       <Icon name="warning" size={16} />
@@ -383,10 +470,14 @@ function StateBanner({ session }) {
 }
 
 // ── Session detail shell ─────────────────────────────────────────────────────
-function SessionDetail({ session, split, statusStyle, onBack }) {
-  const ended = ["completed", "failed", "stopped"].includes(session.status);
+function SessionDetail({ session, split, statusStyle, onBack, answer }) {
+  // confirm = clean agent exit with tasks unfinished — the run is over, review mode applies.
+  const ended = ["completed", "failed", "stopped", "confirm"].includes(session.status);
   const interactive = (window.DATA.TOOLS.find((t) => t.id === session.tool) || {}).interactive;
-  const ratio = { terminal: "1fr 2.5fr", split: "1fr 1.6fr", board: "1.35fr 1fr" }[split] || "1fr 1.6fr";
+  const focusPrompt = !!answer && session.status === "awaiting";
+  const effSplit = focusPrompt ? "terminal" : split;
+  const ratio = { terminal: "1fr 2.5fr", split: "1fr 1.6fr", board: "1.35fr 1fr" }[effSplit] || "1fr 1.6fr";
+  const [railOpen, setRailOpen] = React.useState(true);
 
   return (
     <div className="screen session-screen">
@@ -402,8 +493,9 @@ function SessionDetail({ session, split, statusStyle, onBack }) {
           <div className="sess-chips">
             <Chip icon="doc" mono>{session.spec}</Chip>
             <IssueChip issue={session.issue} />
-            <SourceChip source={session.source} />
-            <BackendChip backend={session.backend} name={session.backendName} />
+            {/* host availability rides on the chips — the dot only appears when degraded/down */}
+            <SourceChip source={session.source} availability={window.DATA.sessionHostAvail(session)} />
+            <BackendChip backend={session.backend} name={session.backendName} availability={window.DATA.sessionHostAvail(session)} />
             <Chip icon="git">{session.envKind === "fresh" ? "fresh env" : session.envName}</Chip>
             {session.envKind === "existing" && <Chip icon="shield" className="okSoft">worktree-isolated</Chip>}
           </div>
@@ -417,9 +509,15 @@ function SessionDetail({ session, split, statusStyle, onBack }) {
           </button>
           {!ended ? (
             <button className="btn danger"><Icon name="stop" size={14} /> Stop</button>
+          ) : session.status === "confirm" ? (
+            <button className="btn primary" title="Mark this session completed"><Icon name="check" size={14} /> Confirm completion</button>
           ) : (
             <button className="btn primary"><Icon name="refresh" size={14} /> Start similar</button>
           )}
+          <button className={`iconbtn${railOpen ? " on" : ""}`} onClick={() => setRailOpen((o) => !o)}
+            title={railOpen ? "Hide telemetry rail" : "Show telemetry rail"} aria-label={railOpen ? "Hide telemetry rail" : "Show telemetry rail"} aria-pressed={railOpen}>
+            <Icon name="layout" size={16} />
+          </button>
         </div>
       </header>
 
@@ -427,9 +525,11 @@ function SessionDetail({ session, split, statusStyle, onBack }) {
 
       <div className="sess-body">
         <div className="sess-main" style={{ gridTemplateColumns: ratio }}>
-          <TaskBoard session={session} compact={split === "terminal"} ended={ended} />
-          <Terminal session={session} interactive={interactive} ended={ended} />
+          <TaskBoard session={session} compact={effSplit === "terminal"} ended={ended}
+            footer={!railOpen ? <SessionMetrics session={session} ended={ended} /> : null} />
+          <Terminal session={session} interactive={interactive} ended={ended} focusPrompt={focusPrompt} />
         </div>
+        {railOpen && <TelemetryRail session={session} ended={ended} />}
       </div>
     </div>
   );

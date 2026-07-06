@@ -5,6 +5,8 @@ const S = { fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLineca
 const STATUS_GLYPH = {
   starting: <g {...S}><circle cx="12" cy="12" r="7.5" strokeDasharray="6 5" /></g>,
   running:  <g><circle cx="12" cy="12" r="6.5" fill="currentColor" /></g>,
+  awaiting: <g {...S}><path d="M4.5 6h15v9.5h-8.5L6 19.5v-4H4.5z" /><path d="M9.7 9.6a2.3 2.3 0 1 1 3 2.2c-.7.3-1.2.8-1.2 1.5" /><circle cx="11.5" cy="15.2" r=".25" fill="currentColor" stroke="currentColor" /></g>,
+  confirm:  <g {...S}><path d="M9 5.5H7.2c-.9 0-1.7.7-1.7 1.6v12.3c0 .9.8 1.6 1.7 1.6h9.6c.9 0 1.7-.7 1.7-1.6V7.1c0-.9-.8-1.6-1.7-1.6H15" /><rect x="9" y="3.5" width="6" height="3.4" rx="1.2" /><path d="M8.7 13.4l2.4 2.4 4.4-5" /></g>,
   stalled:  <g {...S}><path d="M12 4.5 21 19H3z" /><path d="M12 10.5v3.5" /><circle cx="12" cy="16.6" r=".3" fill="currentColor" stroke="currentColor" /></g>,
   failed:   <g {...S}><path d="M8 5h8l3.5 3.5v8L16 20H8l-3.5-3.5v-8z" /><path d="M9.5 9.5l5 5M14.5 9.5l-5 5" /></g>,
   completed:<g {...S}><circle cx="12" cy="12" r="8" /><path d="M8.3 12.2l2.6 2.6 4.8-5.2" /></g>,
@@ -21,6 +23,7 @@ const PATHS = {
   gpu:      <g {...S}><rect x="3" y="6" width="18" height="12" rx="2" /><rect x="6.5" y="9.5" width="5.5" height="5" rx="1" /><circle cx="16" cy="12" r="2" /><path d="M6 18v2M12 18v2M18 18v2" /></g>,
   tag:      <g {...S}><path d="M4 12.5V5.4C4 4.6 4.6 4 5.4 4H12l8 8-7.2 7.2a1.2 1.2 0 0 1-1.7 0L4 12.5z" /><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none" /></g>,
   discover: <g {...S}><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4 4" /></g>,
+  radar:    <g {...S}><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12l5.5-5.5" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /></g>,
   tools:    <g {...S}><path d="M14.5 6.5a3.5 3.5 0 0 0-4.8 4.5L4 16.8 7.2 20l5.8-5.7a3.5 3.5 0 0 0 4.5-4.8l-2.3 2.3-2.1-2.1z" /></g>,
   backends: <g {...S}><rect x="3.5" y="5" width="17" height="6" rx="1.8" /><rect x="3.5" y="13" width="17" height="6" rx="1.8" /><path d="M7 8h.01M7 16h.01" /></g>,
   host:     <g {...S}><rect x="4" y="4" width="16" height="12" rx="1.8" /><path d="M9 20h6M12 16v4" /><path d="M7.5 7.5h6" /></g>,
@@ -62,6 +65,7 @@ const PATHS = {
   doc:      <g {...S}><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v4h4M10 12h5M10 16h5" /></g>,
   sun:      <g {...S}><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19" /></g>,
   moon:     <g {...S}><path d="M20 13A8 8 0 0 1 9 4a8 8 0 1 0 11 9z" /></g>,
+  display:  <g {...S}><rect x="3" y="4" width="18" height="12" rx="1.6" /><path d="M8.5 20h7M12 16v4" /></g>,
   warning:  <g {...S}><path d="M12 4.5 21 19H3z" /><path d="M12 10v4" /><circle cx="12" cy="16.5" r=".3" fill="currentColor" /></g>,
   info:     <g {...S}><circle cx="12" cy="12" r="8" /><path d="M12 11v5" /><circle cx="12" cy="8" r=".4" fill="currentColor" /></g>,
   dot:      <g><circle cx="12" cy="12" r="3" fill="currentColor" /></g>,
@@ -70,6 +74,7 @@ const PATHS = {
   layout:   <g {...S}><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M13 4v16" /></g>,
   refresh:  <g {...S}><path d="M20 11a8 8 0 0 0-14-4l-2 2M4 13a8 8 0 0 0 14 4l2-2" /><path d="M4 5v4h4M20 19v-4h-4" /></g>,
   pin:      <g {...S}><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3z" /><path d="M12 15v5" /></g>,
+  inbox:    <g {...S}><path d="M4 13.5 6.4 5.5h11.2L20 13.5V19H4z" /><path d="M4 13.5h4l1.4 2.4h5.2L16 13.5h4" /></g>,
 };
 
 function Icon({ name, size = 16, className = "", style }) {

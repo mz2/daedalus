@@ -22,7 +22,11 @@ function FormSection({ n, title, sub, done, children }) {
   );
 }
 
-function ConfirmLaunchModal({ summary, onClose, onLaunch }) {
+// `provisionFail` — the "provisioning failed" demo path: Launch surfaces the
+// failure inside the modal instead of navigating. FR-005: create is atomic, so
+// a failed create means no session and nothing to clean up.
+function ConfirmLaunchModal({ summary, onClose, onLaunch, provisionFail }) {
+  const [failed, setFailed] = React.useState(false);
   return (
     <div className="palette-scrim" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
@@ -36,22 +40,38 @@ function ConfirmLaunchModal({ summary, onClose, onLaunch }) {
               <div key={r.k} className="row"><span className="cf-k">{r.k}</span><span className="cf-v">{r.v}</span></div>
             ))}
           </div>
-          <div className="banner banner-ok" style={{ margin: 0 }}>
-            <Icon name="shield" size={15} />
-            <div>Secrets are pre-provisioned in the environment — Daedalus never displays or captures them.</div>
-          </div>
+          {failed ? (
+            <FailureNotice title="Provisioning failed" mono
+              reason={'Workshop create failed: image "ubuntu-24.04-agents" not found on host eu-fra-1'}
+              actions={<>
+                <button className="btn sm" onClick={() => setFailed(false)}><Icon name="refresh" size={12} /> Try again</button>
+                <button className="btn sm" onClick={onClose}>Choose another backend</button>
+                <button className="btn sm ghost"><Icon name="host" size={12} /> View host</button>
+              </>}>
+              <div className="fnotice-note"><Icon name="shield" size={11} />No session was created — nothing to clean up.</div>
+            </FailureNotice>
+          ) : (
+            <div className="banner banner-ok" style={{ margin: 0 }}>
+              <Icon name="shield" size={15} />
+              <div>Secrets are pre-provisioned in the environment — Daedalus never displays or captures them.</div>
+            </div>
+          )}
         </div>
         <div className="modal-foot">
           <button className="btn ghost" onClick={onClose}>Back</button>
           <div className="tb-spacer" />
-          <button className="btn primary" onClick={onLaunch}><Icon name="bolt" size={14} /> Launch session</button>
+          <button className="btn primary" disabled={failed} onClick={() => (provisionFail ? setFailed(true) : onLaunch())}><Icon name="bolt" size={14} /> Launch session</button>
         </div>
       </div>
     </div>
   );
 }
 
-function StartSession({ onLaunch, onCancel }) {
+// `demoState` (Tweaks → "Start flow state") ∈ normal | validation |
+// provisioning-failed | limit-reached | env-unreachable | worktree-failed —
+// stages the screen so each failure/edge state is visible without hand-driving
+// the form (brief §6.3).
+function StartSession({ onLaunch, onCancel, demoState = "normal" }) {
   const [tool, setTool] = React.useState(null);
   const [repo, setRepo] = React.useState("acme/monorepo");
   const [specMode, setSpecMode] = React.useState("existing");
@@ -70,6 +90,15 @@ function StartSession({ onLaunch, onCancel }) {
   const typeName = (id) => (TYPES.find((t) => t.id === id) || {}).name || id;
   const hostName = (id) => (HOSTS.find((h) => h.id === id) || {}).name || id;
 
+  // demo-state presets — stage the form so the state is visible immediately
+  React.useEffect(() => {
+    if (demoState === "validation") { setTool(null); setSpecBranch(null); setNewSpec(""); setSpecMode("existing"); }
+    else if (demoState === "env-unreachable") { setEnvMode("existing"); setEnv(null); }
+  }, [demoState]);
+  const attempted = demoState === "validation"; // launch was attempted with an incomplete form
+  const limit = demoState === "limit-reached";
+  const envUnreach = (id) => demoState === "env-unreachable" && id === "env-infra";
+
   const REPOS = ["acme/monorepo", "acme/web-app", "acme/infra", "acme/gateway"];
   const SPEC_BRANCHES = {
     "acme/monorepo": ["specs/044-device-flow", "specs/039-async-billing", "specs/051-sdk-gen"],
@@ -82,8 +111,42 @@ function StartSession({ onLaunch, onCancel }) {
 
   const toolOk = !!tool;
   const objectiveOk = !!repo && (specMode === "existing" ? !!specBranch : !!newSpec.trim());
-  const envOk = envMode === "fresh" ? !!btype : !!env;
+  const envOk = envMode === "fresh" ? !!btype : (!!env && !envUnreach(env));
   const valid = toolOk && objectiveOk && envOk;
+  const toolErr = attempted && !toolOk ? "Choose an agentic tool — nothing can launch without one." : null;
+  const objErr = attempted && !objectiveOk
+    ? (specMode === "existing" ? "Pick a spec branch — the agent needs an objective to work toward." : "Describe the objective — the agent needs one to work toward.")
+    : null;
+
+  // failure/edge panels (brief §6.3) — always a reason + a next action
+  const failPanel =
+    demoState === "provisioning-failed" ? (
+      <FailureNotice title="Provisioning failed" mono
+        reason={'Workshop create failed: image "ubuntu-24.04-agents" not found on host eu-fra-1'}
+        actions={<>
+          <button className="btn sm"><Icon name="refresh" size={12} /> Try again</button>
+          <button className="btn sm" onClick={() => setEnvMode("fresh")}>Choose another backend</button>
+          <button className="btn sm ghost"><Icon name="host" size={12} /> View host</button>
+        </>}>
+        <div className="fnotice-note"><Icon name="shield" size={11} />No session was created — nothing to clean up.</div>
+      </FailureNotice>
+    ) : demoState === "worktree-failed" ? (
+      <FailureNotice title="Couldn't create an isolated worktree" mono
+        reason={"git worktree add failed: branch 'feature/auth' is already checked out at /work/repo"}
+        actions={<>
+          <button className="btn sm"><Icon name="git" size={12} /> Try another branch</button>
+          <button className="btn sm" onClick={() => setEnvMode("fresh")}>Use a fresh environment</button>
+        </>}>
+        <div className="fnotice-note"><Icon name="shield" size={11} />Your existing checkout and uncommitted work were not touched — the worktree never attached.</div>
+      </FailureNotice>
+    ) : limit ? (
+      <FailureNotice tone="warn" title="Concurrency limit reached — 6 of 6 sessions running"
+        reason="The session limit keeps agents from exhausting this host. Finish or stop a running session, or raise the limit to launch another."
+        actions={<>
+          <button className="btn sm" onClick={onCancel}><Icon name="fleet" size={12} /> Open Fleet</button>
+          <button className="btn sm"><Icon name="settings" size={12} /> Raise limit in Settings</button>
+        </>} />
+    ) : null;
 
   const summary = [
     { k: "Tool", v: TOOLS.find((t) => t.id === tool)?.name || "—" },
@@ -102,6 +165,7 @@ function StartSession({ onLaunch, onCancel }) {
         action={<button className="btn ghost" onClick={onCancel}><Icon name="close" size={14} /> Cancel</button>} />
       <div className="start-wrap screen-scroll">
         <div className="start-form">
+          {failPanel}
           {/* 1 — Objective */}
           <FormSection n="1" title="Objective" sub="SpecKit convention — lives on a specs/… branch, decomposes into tracked tasks." done={objectiveOk}>
             <label className="sp-label">Repository</label>
@@ -121,7 +185,7 @@ function StartSession({ onLaunch, onCancel }) {
               <>
                 <label className="sp-label">Spec branch <span style={{ color: "var(--text-3)", fontWeight: 400 }}>· follows <code>specs/xxx-…</code></span></label>
                 {branches.length ? (
-                  <div className="env-list">
+                  <div className={`env-list${objErr ? " invalid" : ""}`}>
                     {branches.map((b) => (
                       <button key={b} className={`env-opt${specBranch === b ? " on" : ""}`} onClick={() => setSpecBranch(b)}>
                         <Icon name="doc" size={14} />
@@ -133,12 +197,14 @@ function StartSession({ onLaunch, onCancel }) {
                 ) : (
                   <div className="disc-empty"><Icon name="info" size={13} /> No <code>specs/…</code> branches here yet — create a new spec instead.</div>
                 )}
+                <FieldError>{objErr}</FieldError>
                 {specBranch && <p className="sp-detected" style={{ marginTop: 12 }}><b>9 tracked tasks</b> in <code>{specBranch}/tasks.md</code>. The agent attaches to an isolated worktree on this branch.</p>}
               </>
             ) : (
               <>
                 <label className="sp-label">Describe the objective</label>
-                <textarea className="input sp-textarea" rows={3} placeholder="e.g. Add OAuth device-flow to the gateway, with token polling and rate-limiting." value={newSpec} onChange={(e) => setNewSpec(e.target.value)} />
+                <textarea className={`input sp-textarea${objErr ? " invalid" : ""}`} rows={3} placeholder="e.g. Add OAuth device-flow to the gateway, with token polling and rate-limiting." value={newSpec} onChange={(e) => setNewSpec(e.target.value)} />
+                <FieldError>{objErr}</FieldError>
                 <div className="spec-plan">
                   <div className="spec-plan-h"><Icon name="bolt" size={13} /> What happens on launch</div>
                   <ol className="spec-steps">
@@ -182,14 +248,32 @@ function StartSession({ onLaunch, onCancel }) {
             ) : (
               <>
                 <div className="env-list">
-                  {existing.map((e) => (
-                    <button key={e.id} className={`env-opt${env === e.id ? " on" : ""}`} onClick={() => setEnv(e.id)}>
-                      <Icon name="git" size={14} />
-                      <div style={{ flex: 1, textAlign: "left" }}><div className="eo-name">{e.name}</div><div className="eo-branch">{typeName(e.type)} · {hostName(e.host)} · branch {e.branch}</div></div>
-                      {env === e.id && <Icon name="check" size={15} />}
-                    </button>
-                  ))}
+                  {existing.map((e) => {
+                    const unreach = envUnreach(e.id);
+                    return (
+                      <button key={e.id} className={`env-opt${env === e.id ? " on" : ""}${unreach ? " unreach" : ""}`}
+                        aria-disabled={unreach} onClick={() => { if (!unreach) setEnv(e.id); }}>
+                        <Icon name="git" size={14} />
+                        <div style={{ flex: 1, textAlign: "left" }}>
+                          <div className="eo-name">{e.name}</div>
+                          <div className="eo-branch">{unreach ? `host ${hostName(e.host)} not responding since 14:02` : `${typeName(e.type)} · ${hostName(e.host)} · branch ${e.branch}`}</div>
+                        </div>
+                        {unreach ? <StatusBadge status="unreachable" style="iconled" /> : env === e.id && <Icon name="check" size={15} />}
+                      </button>
+                    );
+                  })}
                 </div>
+                {demoState === "env-unreachable" && (
+                  <div style={{ marginTop: 13 }}>
+                    <FailureNotice title="Environment unreachable"
+                      reason="acme/infra lives on host eu-fra-1, which hasn't responded since 14:02 — it can't take a session until the tunnel is back. Everything else here still works."
+                      actions={<>
+                        <button className="btn sm"><Icon name="refresh" size={12} /> Rescan</button>
+                        <button className="btn sm">Pick another environment</button>
+                        <button className="btn sm" onClick={() => setEnvMode("fresh")}>Use a fresh environment</button>
+                      </>} />
+                  </div>
+                )}
                 <div className="banner banner-info" style={{ margin: "13px 0 0" }}>
                   <Icon name="shield" size={15} />
                   <div>Work happens in an <b>isolated git worktree</b> — your existing checkout and uncommitted work are never disturbed.</div>
@@ -198,7 +282,7 @@ function StartSession({ onLaunch, onCancel }) {
             )}
             <div className="sform-div" />
             <label className="sp-label">Agentic tool <span style={{ color: "var(--text-3)", fontWeight: 400 }}>· available on {envMode === "fresh" ? typeName(btype) : "this environment"}</span></label>
-            <div className="tool-grid">
+            <div className={`tool-grid${toolErr ? " invalid" : ""}`}>
               {TOOLS.map((t) => (
                 <button key={t.id} className={`tool-opt${tool === t.id ? " on" : ""}`} onClick={() => setTool(t.id)}>
                   <div className="to-top">
@@ -210,85 +294,183 @@ function StartSession({ onLaunch, onCancel }) {
                 </button>
               ))}
             </div>
+            <FieldError>{toolErr}</FieldError>
           </FormSection>
         </div>
       </div>
 
       <div className="start-footer">
-        <span className="start-foot-hint">{valid ? <><Icon name="check" size={13} /> Ready to launch</> : "Complete tool, objective, and environment"}</span>
-        <button className="btn primary" disabled={!valid} onClick={() => setReviewing(true)}>Review &amp; launch <Icon name="chevR" size={14} /></button>
+        {limit ? (
+          <span className="start-foot-hint warn"><Icon name="warning" size={13} /> At the concurrency limit — stop a session or raise the limit to launch</span>
+        ) : attempted && !valid ? (
+          <span className="start-foot-hint err"><Icon name="warning" size={13} /> Fix the highlighted sections — a tool and an objective are required</span>
+        ) : (
+          <span className="start-foot-hint">{valid ? <><Icon name="check" size={13} /> Ready to launch</> : "Complete tool, objective, and environment"}</span>
+        )}
+        <button className="btn primary" disabled={!valid || limit}
+          title={limit ? "Concurrency limit reached — 6 of 6 sessions running" : !valid ? "Complete tool, objective, and environment first" : undefined}
+          onClick={() => setReviewing(true)}>Review &amp; launch <Icon name="chevR" size={14} /></button>
       </div>
 
-      {reviewing && <ConfirmLaunchModal summary={summary} onClose={() => setReviewing(false)} onLaunch={() => onLaunch("s-905")} />}
+      {reviewing && <ConfirmLaunchModal summary={summary} provisionFail={demoState === "provisioning-failed"} onClose={() => setReviewing(false)} onLaunch={() => onLaunch("s-905")} />}
     </div>
   );
 }
 
-/* ───────────────────────── DISCOVER (now a section of Environments) ─────── */
+/* ───────────────────────── DISCOVER (top-level screen, brief §6.5) ──────── */
 const DISC_GROUPS = [
   { key: "local", label: "Local host", icon: "dot" },
   { key: "mdns", label: "mDNS-advertised hosts", icon: "globe" },
   { key: "tunnel", label: "Tunneled Workshops", icon: "tunnel" },
 ];
-function DiscoverSection({ statusStyle, onOpen }) {
+
+// `dropped` — this row's tunnel dropped (FR-014): the session stays listed
+// with an explicit unreachable state instead of silently vanishing.
+function DiscoverRow({ d, statusStyle, onOpen, dropped }) {
+  return (
+    <div className="row disc-row">
+      <StatusBadge status={dropped ? "unreachable" : d.status} style={statusStyle} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="disc-obj">{d.objective}</div>
+        <div className="disc-meta">{d.tool} · {d.host}</div>
+        {dropped && <div className="disc-unreach-reason">Last seen before the tunnel dropped — kept listed until it reconnects.</div>}
+      </div>
+      <SourceChip source={d.group} availability={dropped ? "unavailable" : undefined} />
+      {d.attachable ? (
+        dropped ? (
+          <button className="btn sm" disabled title="Unreachable — reconnect the tunnel to attach">Connect</button>
+        ) : (
+          <button className="btn sm tinted" onClick={() => onOpen("s-906")}><Icon name="bolt" size={12} /> Connect</button>
+        )
+      ) : (
+        <div className="disc-noattach" title={d.reason}><Icon name="warning" size={12} /> {d.status === "completed" ? "Review only" : "Not attachable"}</div>
+      )}
+    </div>
+  );
+}
+
+// `demoState` (Tweaks → "Discover state") ∈ normal | scanning | empty | source-dropped
+function Discover({ statusStyle, onOpen, demoState = "normal", onSettings }) {
   const items = window.DATA.DISCOVERED;
   const [scanning, setScanning] = React.useState(false);
-  return (
-    <div className="disc-section">
-      <div className="disc-section-head">
-        <div>
-          <GroupLabel>Discover sessions</GroupLabel>
-          <div className="set-note" style={{ paddingTop: 0 }}><Icon name="info" size={12} /> Sessions running on this host, mDNS hosts, and tunneled Workshops — attach to any.</div>
-        </div>
-        <button className={`btn sm${scanning ? " tinted" : ""}`} onClick={() => { setScanning(true); setTimeout(() => setScanning(false), 1400); }}>
-          <Icon name="refresh" size={13} className={scanning ? "stat-glyph spin" : ""} /> {scanning ? "Scanning…" : "Rescan"}
-        </button>
+  const rescan = () => { setScanning(true); setTimeout(() => setScanning(false), 1400); };
+  const scan = scanning || demoState === "scanning";
+  const sourceDropped = demoState === "source-dropped";
+  const dupCount = items.filter((d) => d.dupOf).length;
+
+  const head = (
+    <ScreenHead title="Discover"
+      sub="Sessions found beyond the ones you started here — on this host, on mDNS-advertised hosts, and in tunneled Workshops. Attach to any of them."
+      action={<button className={`btn${scan ? " tinted" : ""}`} onClick={rescan}>
+        <Icon name="refresh" size={13} className={scan ? "stat-glyph spin" : ""} /> {scan ? "Scanning…" : "Rescan"}
+      </button>} />
+  );
+
+  if (demoState === "empty") {
+    return (
+      <div className="screen">
+        {head}
+        <EmptyState icon="radar" title="Nothing discovered"
+          body="No hosts are advertising sessions right now. mDNS only reaches hosts on your local network, a Workshop only advertises once the Daedalus SDK is registered inside it, and tunneled Workshops appear only while their tunnel is connected."
+          action={<div style={{ display: "flex", gap: 9 }}>
+            <button className="btn primary" onClick={rescan}><Icon name="refresh" size={14} /> Rescan</button>
+            <button className="btn" onClick={onSettings}><Icon name="tunnel" size={14} /> Set up a tunnel</button>
+          </div>} />
       </div>
-      {DISC_GROUPS.map((g) => {
-        const list = items.filter((d) => d.group === g.key && !d.dupOf);
-        return (
-          <div key={g.key} className="disc-group">
-            <div className="disc-grp-label"><Icon name={g.icon} size={12} /> {g.label} <span className="disc-grp-n">{list.length}</span></div>
-            {list.length === 0 ? (
-              <div className="disc-empty">
-                <Icon name="info" size={13} /> {g.key === "mdns" ? "No hosts advertising on the local network." : "Nothing discovered here."}
+    );
+  }
+
+  return (
+    <div className="screen">
+      {head}
+      <div className="screen-scroll">
+        {DISC_GROUPS.map((g) => {
+          const list = items.filter((d) => d.group === g.key && !d.dupOf);
+          const grpDropped = sourceDropped && g.key === "tunnel";
+          return (
+            <div key={g.key} className={`disc-group${grpDropped ? " dropped" : ""}`}>
+              <div className="disc-grp-label">
+                <Icon name={g.icon} size={12} /> {g.label} <span className="disc-grp-n">{list.length}</span>
+                {grpDropped && <>
+                  <span className="disc-dropwarn"><Icon name="warning" size={12} /> tunnel eu-fra-1 dropped 2m ago</span>
+                  <button className="btn sm tinted" style={{ marginLeft: 8 }}><Icon name="tunnel" size={12} /> Reconnect</button>
+                </>}
               </div>
-            ) : (
-              <div className="grouped">
-                {list.map((d) => (
-                  <div key={d.id} className="row disc-row">
-                    <StatusBadge status={d.status} style={statusStyle} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="disc-obj">{d.objective}</div>
-                      <div className="disc-meta">{d.tool} · {d.host}</div>
-                    </div>
-                    {d.attachable ? (
-                      <button className="btn sm tinted" onClick={() => onOpen("s-906")}><Icon name="bolt" size={12} /> Connect</button>
-                    ) : (
-                      <div className="disc-noattach" title={d.reason}><Icon name="warning" size={12} /> {d.status === "completed" ? "Review only" : "Not attachable"}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
-      <div className="disc-dedup"><Icon name="info" size={12} /> 1 session advertised from multiple sources was de-duplicated.</div>
+              {demoState === "scanning" ? (
+                <div className="disc-empty"><Icon name="refresh" size={13} className="stat-glyph spin" /> Scanning…</div>
+              ) : list.length === 0 ? (
+                <div className="disc-empty">
+                  <Icon name="info" size={13} /> {g.key === "mdns" ? "No hosts advertising on the local network." : "Nothing discovered here."}
+                </div>
+              ) : (
+                <div className="grouped">
+                  {list.map((d) => (
+                    <DiscoverRow key={d.id} d={d} statusStyle={statusStyle} onOpen={onOpen}
+                      dropped={grpDropped && d.attachable && d.host.includes("eu-fra-1")} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {demoState !== "scanning" && dupCount > 0 && (
+          <div className="disc-dedup"><Icon name="info" size={12} /> {dupCount} session advertised from multiple sources was de-duplicated.</div>
+        )}
+      </div>
     </div>
   );
 }
 
 /* ───────────────────────── TOOLS (list) ───────────────────────── */
 const TOOL_TINTS = ["oklch(0.66 0.045 45)", "oklch(0.64 0.045 250)", "oklch(0.64 0.045 155)", "oklch(0.63 0.05 305)", "oklch(0.64 0.045 25)", "oklch(0.62 0.02 260)"];
-function ToolRegisterModal({ onClose, onAdd }) {
+// Commands that exist on the sandbox images — anything else fails the
+// launch-command check with the mono "not found in sandbox PATH" error.
+const SANDBOX_CMDS = ["claude", "agy", "opencode", "codex", "aider", "gemini"];
+
+function ToolRegisterModal({ onClose, onAdd, existingNames = [] }) {
   const [name, setName] = React.useState("");
   const [invoke, setInvoke] = React.useState("");
   const [version, setVersion] = React.useState("");
   const [interactive, setInteractive] = React.useState(true);
   const [tint, setTint] = React.useState(TOOL_TINTS[0]);
+  const [errs, setErrs] = React.useState({});
+  const [invokeOk, setInvokeOk] = React.useState(false);
   const mono = (name.trim()[0] || "?").toUpperCase();
-  const valid = name.trim() && invoke.trim();
+
+  // validation — errors surface on blur / attempted submit, not while typing
+  const nameError = (v) => {
+    const t = v.trim();
+    if (!t) return "Name is required.";
+    if (existingNames.some((n) => n.toLowerCase() === t.toLowerCase())) return `A tool named '${t}' is already registered.`;
+    return null;
+  };
+  const invokeError = (v) => {
+    const t = v.trim();
+    if (!t) return "Launch command is required.";
+    if (((t.match(/"/g) || []).length) % 2) return "Unbalanced quotes — arguments with spaces must be quoted.";
+    const cmd = t.split(/\s+/)[0];
+    if (!SANDBOX_CMDS.includes(cmd)) return `${cmd}: command not found in sandbox PATH`;
+    return null;
+  };
+  const invokeErrMono = !!errs.invoke && /command not found/.test(errs.invoke);
+  const validate = () => {
+    const e = { name: nameError(name), invoke: invokeError(invoke) };
+    setErrs(e); setInvokeOk(false);
+    return !e.name && !e.invoke;
+  };
+  // "Validate definition" — dry-checks the launch command; with an empty field
+  // it seeds the classic typo so the malformed state is demonstrable.
+  const demoValidate = () => {
+    const v = invoke.trim() ? invoke : 'claude--dangerously "/speckit.implement"';
+    if (!invoke.trim()) setInvoke(v);
+    const err = invokeError(v);
+    setErrs((e) => ({ ...e, invoke: err })); setInvokeOk(!err);
+  };
+  const submit = () => {
+    if (!validate()) return;
+    onAdd({ id: "tool-" + Date.now(), name: name.trim(), invoke: invoke.trim(), version: version.trim() || "1.0", interactive, speckit: true, track: "tasks.md + output", mono, tint, desc: "Operator-registered SpecKit agent." });
+    onClose();
+  };
   return (
     <div className="palette-scrim" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
@@ -310,7 +492,10 @@ function ToolRegisterModal({ onClose, onAdd }) {
           <div className="env-cols">
             <div className="field" style={{ flex: 2 }}>
               <label className="sp-label">Name</label>
-              <input className="input" placeholder="Claude Code" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              <input className={`input${errs.name ? " invalid" : ""}`} placeholder="Claude Code" value={name}
+                onChange={(e) => { setName(e.target.value); setErrs((x) => ({ ...x, name: null })); }}
+                onBlur={() => setErrs((x) => ({ ...x, name: nameError(name) }))} autoFocus />
+              <FieldError>{errs.name}</FieldError>
             </div>
             <div className="field" style={{ flex: 1 }}>
               <label className="sp-label">Version</label>
@@ -319,7 +504,13 @@ function ToolRegisterModal({ onClose, onAdd }) {
           </div>
           <div className="field">
             <label className="sp-label">Launch command <span style={{ color: "var(--text-3)", fontWeight: 400 }}>· run in the feature worktree</span></label>
-            <input className="input" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} placeholder={'agy -p "/speckit.implement"'} value={invoke} onChange={(e) => setInvoke(e.target.value)} />
+            <input className={`input${errs.invoke ? " invalid" : ""}`} style={{ fontFamily: "var(--font-mono)", fontSize: 12 }} placeholder={'agy -p "/speckit.implement"'} value={invoke}
+              onChange={(e) => { setInvoke(e.target.value); setErrs((x) => ({ ...x, invoke: null })); setInvokeOk(false); }}
+              onBlur={() => setErrs((x) => ({ ...x, invoke: invokeError(invoke) }))} />
+            <FieldError mono={invokeErrMono}>{errs.invoke}</FieldError>
+            {invokeOk && !errs.invoke && (
+              <div className="ferr" style={{ color: "var(--st-running)" }}><Icon name="check" size={12} /> <span>Command found in sandbox PATH — definition looks valid.</span></div>
+            )}
             <div className="treg-hint">The agent must implement the SpecKit workflow — e.g. <code>claude</code>, <code>agy</code>, <code>opencode</code>. It runs the implement pass over the generated spec.</div>
           </div>
           <div className="field">
@@ -341,8 +532,9 @@ function ToolRegisterModal({ onClose, onAdd }) {
         </div>
         <div className="modal-foot">
           <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn ghost" onClick={demoValidate}><Icon name="check" size={13} /> Validate definition</button>
           <div className="tb-spacer" />
-          <button className="btn primary" disabled={!valid} onClick={() => { onAdd({ id: "tool-" + Date.now(), name: name.trim(), invoke: invoke.trim(), version: version.trim() || "1.0", interactive, speckit: true, track: "tasks.md + output", mono, tint, desc: "Operator-registered SpecKit agent." }); onClose(); }}>
+          <button className="btn primary" onClick={submit}>
             <Icon name="plus" size={14} /> Register tool
           </button>
         </div>
@@ -351,15 +543,22 @@ function ToolRegisterModal({ onClose, onAdd }) {
   );
 }
 
-function Tools() {
+// `empty` (Tweaks → "Tools empty (first run)") — renders the registry as it
+// looks before any tool exists; registering one drops back into the list.
+function Tools({ empty }) {
   const [extra, setExtra] = React.useState([]);
   const [registering, setRegistering] = React.useState(false);
-  const TOOLS = [...window.DATA.TOOLS, ...extra];
+  const TOOLS = [...(empty ? [] : window.DATA.TOOLS), ...extra];
   return (
     <div className="screen">
       <ScreenHead title="Tools" sub="SpecKit-compatible agents. Daedalus launches each on a feature spec and tracks progress by watching its tasks.md and session output — no per-tool integration."
         action={<button className="btn primary" onClick={() => setRegistering(true)}><Icon name="plus" size={14} /> Register tool</button>} />
       <div className="screen-scroll">
+        {TOOLS.length === 0 ? (
+          <EmptyState icon="tools" title="Register your first agentic tool"
+            body="A tool is a declarative definition of how to launch an agent inside a sandbox — its launch command, version, and whether it accepts input. Daedalus tracks progress from tasks.md and session output; no per-tool integration."
+            action={<button className="btn primary" onClick={() => setRegistering(true)}><Icon name="plus" size={14} /> Register tool</button>} />
+        ) : (
         <div className="grouped">
           {TOOLS.map((t) => (
             <div key={t.id} className="row tool-row">
@@ -381,8 +580,9 @@ function Tools() {
             </div>
           ))}
         </div>
+        )}
       </div>
-      {registering && <ToolRegisterModal onClose={() => setRegistering(false)} onAdd={(tool) => setExtra((x) => [...x, tool])} />}
+      {registering && <ToolRegisterModal existingNames={TOOLS.map((t) => t.name)} onClose={() => setRegistering(false)} onAdd={(tool) => setExtra((x) => [...x, tool])} />}
     </div>
   );
 }
@@ -466,8 +666,13 @@ function CreateEnvModal({ onClose, onCreate, hostId }) {
   );
 }
 
-function Backends({ onOpenSessions, statusStyle, onOpen }) {
-  const HOSTS = window.DATA.HOSTS, TYPES = window.DATA.BACKEND_TYPES, place = window.DATA.placement;
+// `demoState` (Tweaks → "Backends state") ∈ normal | host-down | no-envs (brief §6.7)
+function Backends({ onOpenSessions, onDiscover, onStart, demoState = "normal" }) {
+  const hostDown = demoState === "host-down";
+  // host-down: a tunneled host degrades to unavailable — flagged, never hidden (FR-028)
+  const HOSTS = window.DATA.HOSTS.map((h) =>
+    hostDown && h.id === "eu-fra-1" ? { ...h, availability: "unavailable", note: "Tunnel dropped — reconnect to resume." } : h);
+  const TYPES = window.DATA.BACKEND_TYPES, place = window.DATA.placement;
   const [extra, setExtra] = React.useState([]);
   const [creating, setCreating] = React.useState(false);
   const [createHost, setCreateHost] = React.useState(null);
@@ -493,12 +698,16 @@ function Backends({ onOpenSessions, statusStyle, onOpen }) {
         action={<button className="btn primary" onClick={() => openCreate(null)}><Icon name="plus" size={14} /> New environment</button>} />
       <div className="screen-scroll">
         <GroupLabel>Hosts</GroupLabel>
+        {hostDown && (
+          <div className="host-reassure"><Icon name="shield" size={13} /> Other hosts keep working — sessions elsewhere are unaffected.</div>
+        )}
         <div className="grouped">
           {HOSTS.map((h) => {
             const ses = sessByHost(h.id);
             const active = ses.filter((s) => isLive(s.status) || s.status === "stalled").length;
             const envs = envsByHost(h.id);
             const k = HOST_KIND[h.kind];
+            const down = h.availability === "unavailable";
             return (
               <div key={h.id} className={`row backend-row avail-${h.availability}`}>
                 <div className="brow-icon"><Icon name={k.icon} size={19} /></div>
@@ -517,9 +726,16 @@ function Backends({ onOpenSessions, statusStyle, onOpen }) {
                     ))}
                   </div>
                   <div className="brow-meta"><Icon name="backends" size={11} /> {envs.length} environment{envs.length === 1 ? "" : "s"} · {ses.length} session{ses.length === 1 ? "" : "s"}{active > 0 && <span className="bcard-active"> · {active} active</span>}</div>
+                  {h.availability !== "available" && h.note && (
+                    <div className="brow-note"><Icon name="warning" size={11} /> {h.note}</div>
+                  )}
                 </div>
                 <div className="brow-right">
-                  <button className="btn sm tinted" onClick={() => openCreate(h.id)}><Icon name="plus" size={12} /> New environment</button>
+                  {down ? (
+                    <button className="btn sm tinted"><Icon name="tunnel" size={12} /> Reconnect</button>
+                  ) : (
+                    <button className="btn sm tinted" onClick={() => openCreate(h.id)}><Icon name="plus" size={12} /> New environment</button>
+                  )}
                   {ses.length > 0 && <button className="btn sm" onClick={() => onOpenSessions({ host: h.id })}>View sessions <Icon name="arrowR" size={12} /></button>}
                 </div>
               </div>
@@ -529,10 +745,19 @@ function Backends({ onOpenSessions, statusStyle, onOpen }) {
 
         <div style={{ height: 22 }} />
         <GroupLabel right={<button className="glabel-add" onClick={() => openCreate(null)}><Icon name="plus" size={12} /> New</button>}>Environments</GroupLabel>
+        {demoState === "no-envs" ? (
+          <EmptyState icon="backends" title="No environments yet"
+            body="Daedalus provisions an isolated environment automatically when you start a session — or create one here to have it ready ahead of time."
+            action={<div style={{ display: "flex", gap: 9 }}>
+              <button className="btn primary" onClick={() => openCreate(null)}><Icon name="plus" size={14} /> Create environment</button>
+              <button className="btn" onClick={onStart}><Icon name="bolt" size={14} /> Start a session</button>
+            </div>} />
+        ) : (
         <div className="grouped">
           {ENVS.map((e) => {
             const ses = sessByEnv(e.id);
             const direct = typeKind(e.type) === "direct";
+            const envDown = hostDown && e.host === "eu-fra-1";
             return (
               <button key={e.id} className="row env-row" onClick={() => onOpenSessions({ env: e.id })}>
                 <Icon name={typeIcon(e.type)} size={15} style={{ color: "var(--text-2)" }} />
@@ -541,6 +766,7 @@ function Backends({ onOpenSessions, statusStyle, onOpen }) {
                     {e.fresh && <span className="chip">new</span>}</div>
                   <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>{typeName(e.type)} · {hostName(e.host)}{e.branch ? ` · branch ${e.branch}` : ""}</div>
                 </div>
+                {envDown && <span className="chip warnsoft"><AvailDot state="unavailable" /> host unreachable</span>}
                 {e.branch
                   ? <span className="chip okSoft"><Icon name="shield" size={11} /> worktree-isolated</span>
                   : direct
@@ -553,9 +779,13 @@ function Backends({ onOpenSessions, statusStyle, onOpen }) {
           })}
           <div className="row"><button className="btn sm tinted" onClick={() => openCreate(null)}><Icon name="plus" size={12} /> New environment</button></div>
         </div>
+        )}
 
-        <div style={{ height: 8 }} />
-        <DiscoverSection statusStyle={statusStyle} onOpen={onOpen} />
+        <div className="disc-crosslink">
+          <Icon name="radar" size={13} />
+          <span>Looking for sessions on other hosts?</span>
+          <button className="linklike" onClick={onDiscover}>Discover →</button>
+        </div>
         <div style={{ height: 24 }} />
       </div>
       {creating && <CreateEnvModal hostId={createHost} onClose={() => setCreating(false)} onCreate={(env) => setExtra((x) => [...x, env])} />}
@@ -674,9 +904,11 @@ function SettingsModal({ tweaks, setTweak, onClose }) {
         <div className="grouped">
           <div className="row"><div style={{ flex: 1 }} className="set-k">Theme</div>
             <div className="seg">
+              <button aria-pressed={tweaks.theme === "system"} onClick={() => setTweak("theme", "system")}><Icon name="display" size={13} /> System</button>
               <button aria-pressed={tweaks.theme === "light"} onClick={() => setTweak("theme", "light")}><Icon name="sun" size={13} /> Light</button>
               <button aria-pressed={tweaks.theme === "dark"} onClick={() => setTweak("theme", "dark")}><Icon name="moon" size={13} /> Dark</button>
             </div></div>
+          {tweaks.theme === "system" && <div className="row"><div className="set-d" style={{ flex: 1 }}><Icon name="info" size={12} style={{ verticalAlign: "-2px", marginRight: 5, opacity: .7 }} />Following your operating system's Light / Dark appearance.</div></div>}
           <div className="row"><div style={{ flex: 1 }} className="set-k">Platform skin</div>
             <div className="seg">
               <button aria-pressed={tweaks.skin === "mac"} onClick={() => setTweak({ skin: "mac", accent: "#E0901C" })}><Icon name="apple" size={13} /> macOS</button>
@@ -695,4 +927,4 @@ function FakeToggle({ on: initial }) {
   return <button className="ios-toggle" data-on={on ? "1" : "0"} onClick={() => setOn(!on)}><i /></button>;
 }
 
-Object.assign(window, { StartSession, Tools, Backends, SettingsModal });
+Object.assign(window, { StartSession, Discover, Tools, Backends, SettingsModal });

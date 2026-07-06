@@ -2,7 +2,7 @@
 
 function FleetCard({ s, statusStyle, onOpen }) {
   const term = window.DATA.STATUS_LABEL;
-  const attention = s.status === "stalled" || s.status === "failed" || s.status === "unknown";
+  const attention = ["stalled", "failed", "unknown", "awaiting", "confirm"].includes(s.status);
   return (
     <article className={`fleet-card${attention ? " att" : ""}`} onClick={() => onOpen(s.id)} tabIndex={0}
       onKeyDown={(e) => { if (e.key === "Enter") onOpen(s.id); }}>
@@ -18,8 +18,9 @@ function FleetCard({ s, statusStyle, onOpen }) {
       <h3 className="fc-obj">{s.objective}</h3>
       <div className="fc-spec"><Icon name="doc" size={12} /> {s.spec}</div>
       <div className="fc-chips">
-        <SourceChip source={s.source} />
-        <BackendChip backend={s.backend} name={s.backendName} />
+        {/* availability dot only when the host is degraded/down — quiet otherwise */}
+        <SourceChip source={s.source} availability={window.DATA.sessionHostAvail(s)} />
+        <BackendChip backend={s.backend} name={s.backendName} availability={window.DATA.sessionHostAvail(s)} />
         <Chip icon="git" className={s.envKind === "existing" ? "" : ""}>
           {s.envKind === "fresh" ? "fresh env" : s.envName}
         </Chip>
@@ -39,7 +40,7 @@ function FleetCard({ s, statusStyle, onOpen }) {
 }
 
 function FleetRow({ s, statusStyle, onOpen }) {
-  const attention = s.status === "stalled" || s.status === "failed" || s.status === "unknown";
+  const attention = ["stalled", "failed", "unknown", "awaiting", "confirm"].includes(s.status);
   const { done, total } = taskCounts(s.tasks);
   return (
     <div className={`fleet-row${attention ? " att" : ""}`} onClick={() => onOpen(s.id)} tabIndex={0}
@@ -50,8 +51,8 @@ function FleetRow({ s, statusStyle, onOpen }) {
         <div className="fr-meta">{s.toolName} · {s.spec}</div>
       </div>
       <div className="fr-chips">
-        <SourceChip source={s.source} />
-        <BackendChip backend={s.backend} name={s.backendName} />
+        <SourceChip source={s.source} availability={window.DATA.sessionHostAvail(s)} />
+        <BackendChip backend={s.backend} name={s.backendName} availability={window.DATA.sessionHostAvail(s)} />
       </div>
       <div style={{ width: 110, flexShrink: 0 }}><ProgressPill tasks={s.tasks} status={s.status} /></div>
       <div className="fr-age" style={{ width: 76, flexShrink: 0, textAlign: "right" }}>
@@ -62,36 +63,31 @@ function FleetRow({ s, statusStyle, onOpen }) {
   );
 }
 
-// Rich multiline list row — carries everything the old card did, in one wide row.
+// Rich multiline list row — harmonized with the Tasks list: identity + branch,
+// exec-environment demoted to the detail view, "Needs you" surfaced inline.
 function FleetRowRich({ s, statusStyle, onOpen }) {
-  const attention = s.status === "stalled" || s.status === "failed" || s.status === "unknown";
+  const needs = needsMeta(s.status) ? s.status : null;
   const live = isLive(s.status);
+  // host reachability — dot shown only when degraded/down (quiet when healthy)
+  const hostAvail = window.DATA.sessionHostAvail(s);
   return (
-    <article className={`srow${attention ? " att" : ""}`} onClick={() => onOpen(s.id)} tabIndex={0}
+    <article className={`srow${needs ? " needs ny--" + needs : ""}`} onClick={() => onOpen(s.id)} tabIndex={0}
       onKeyDown={(e) => { if (e.key === "Enter") onOpen(s.id); }}>
       <div className="srow-status"><StatusBadge status={s.status} style={statusStyle} /></div>
       <div className="srow-main">
         <div className="srow-l1">
           <h3 className="srow-obj">{s.objective}</h3>
-          <span className="srow-tool">{s.toolName}</span>
+          {needs && <NeedsTag status={needs} />}
         </div>
-        <div className="srow-l2"><Icon name="doc" size={11} /> {s.spec}</div>
-        <div className="srow-chips">
-          <SourceChip source={s.source} />
-          <BackendChip backend={s.backend} name={s.backendName} />
-          <Chip icon="git">{s.envKind === "fresh" ? "fresh env" : s.envName}</Chip>
-          {s.envKind === "existing" && <Chip icon="shield" className="okSoft">worktree</Chip>}
+        <div className="srow-sub">
+          <span className="row-branch"><Icon name="git" size={11} /> {s.spec}</span>
+          <span className="row-meta"><Icon name="tools" size={11} /> {s.toolName}</span>
+          <span className="row-meta"><Icon name="backends" size={11} /> {s.backendName}{hostAvail !== "available" && <AvailDot state={hostAvail} />}</span>
           <IssueChip issue={s.issue} />
         </div>
-        {s.note && <div className="srow-note"><Icon name="info" size={12} /> {s.note}</div>}
       </div>
       <div className="srow-right">
         <div className="srow-prog"><ProgressPill tasks={s.tasks} status={s.status} /></div>
-        <div className="srow-res">
-          <ResMeter icon="cpu" value={s.cpu} />
-          <ResMeter icon="mem" value={s.mem} />
-          <ResMeter icon="disk" value={s.disk} />
-        </div>
         <div className="srow-age"><Icon name="clock" size={11} /> {live ? fmtDur(s.started) : fmtAgo(s.ended ?? s.lastEvent)}</div>
       </div>
       <Icon name="chevR" size={15} className="srow-chev" />
@@ -114,7 +110,7 @@ function FleetTable({ sessions, statusStyle, onOpen }) {
         <span style={{ width: 78, textAlign: "right" }}>Age</span>
       </div>
       {sessions.map((s) => {
-        const attention = s.status === "stalled" || s.status === "failed" || s.status === "unknown";
+        const attention = ["stalled", "failed", "unknown", "awaiting", "confirm"].includes(s.status);
         return (
           <div key={s.id} className={`ft-row${attention ? " att" : ""}`} onClick={() => onOpen(s.id)} tabIndex={0}
             onKeyDown={(e) => { if (e.key === "Enter") onOpen(s.id); }}>
@@ -134,7 +130,7 @@ function FleetTable({ sessions, statusStyle, onOpen }) {
   );
 }
 
-const STATUS_FILTERS = ["running", "stalled", "failed", "completed", "stopped"];
+const STATUS_FILTERS = ["running", "awaiting", "confirm", "stalled", "failed", "completed", "stopped", "unknown"];
 
 function Fleet({ layout, statusStyle, demoState, onOpen, onStart, density, filter, onClearFilter }) {
   const all = window.DATA.SESSIONS;
@@ -157,7 +153,7 @@ function Fleet({ layout, statusStyle, demoState, onOpen, onStart, density, filte
     if (hostFilter && window.DATA.placement(s.backend).host !== hostFilter) return false;
     return true;
   });
-  const order = { stalled: 0, failed: 1, unknown: 2, starting: 3, running: 4, completed: 5, stopped: 6 };
+  const order = { awaiting: 0, confirm: 1, stalled: 2, failed: 3, unknown: 4, starting: 5, running: 6, completed: 7, stopped: 8 };
   if (sort === "attention") sessions = [...sessions].sort((a, b) => (order[a.status] - order[b.status]) || (a.started - b.started));
   else if (sort === "recent") sessions = [...sessions].sort((a, b) => (a.lastEvent ?? 0) - (b.lastEvent ?? 0));
   else if (sort === "name") sessions = [...sessions].sort((a, b) => a.objective.localeCompare(b.objective));

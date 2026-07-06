@@ -66,14 +66,23 @@ function Chip({ icon, children, mono, className = "", dotColor }) {
   );
 }
 
+// `availability` ∈ "available" | "degraded" | "unavailable" (optional) — host
+// reachability rendered as a small dotled inside the chip. Deliberately only
+// drawn when availability !== "available": a green dot on every healthy chip
+// would be noise; the dot exists to flag the interesting (degraded/down) case.
+const AVAIL_COLOR = {
+  available: "var(--st-running)", degraded: "var(--st-stalled)", unavailable: "var(--st-failed)",
+};
+const availDotColor = (a) => (a && a !== "available" ? AVAIL_COLOR[a] || AVAIL_COLOR.unavailable : null);
+
 const SOURCE_META = {
   local:  { icon: "dot", label: "Local" },
   mdns:   { icon: "globe", label: "mDNS" },
   tunnel: { icon: "tunnel", label: "Tunnel" },
 };
-function SourceChip({ source }) {
+function SourceChip({ source, availability }) {
   const m = SOURCE_META[source] || SOURCE_META.local;
-  return <Chip icon={m.icon}>{m.label}</Chip>;
+  return <Chip icon={m.icon} dotColor={availDotColor(availability)}>{m.label}</Chip>;
 }
 
 const BACKEND_META = {
@@ -81,9 +90,9 @@ const BACKEND_META = {
   "workshop-remote": { icon: "tunnel", label: "Workshop · remote" },
   macos: { icon: "apple", label: "macOS" },
 };
-function BackendChip({ backend, name }) {
+function BackendChip({ backend, name, availability }) {
   const m = BACKEND_META[backend] || { icon: "backends", label: name || backend };
-  return <Chip icon={m.icon}>{name || m.label}</Chip>;
+  return <Chip icon={m.icon} dotColor={availDotColor(availability)}>{name || m.label}</Chip>;
 }
 
 // Originating GitHub / Jira issue (only rendered when present)
@@ -173,8 +182,55 @@ function EmptyState({ icon = "info", title, body, action, tone = "neutral" }) {
   );
 }
 
+// ── Failure pattern (brief §8) ───────────────────────────────────────────────
+// THE reusable error block: bold title, a plain-language reason, and next
+// actions — a failure is never a dead end. `tone` ∈ "err" | "warn" picks the
+// banner tint; `mono` renders the reason as terminal-ish monospace (raw tool
+// output); `children` slots extra reassurance lines (use .fnotice-note).
+function FailureNotice({ icon = "warning", tone = "err", title, reason, mono, children, actions }) {
+  return (
+    <div className={`banner banner-${tone} fnotice`}>
+      <Icon name={icon} size={16} />
+      <div className="fnotice-main">
+        <div className="fnotice-title">{title}</div>
+        {reason && <div className={`fnotice-reason${mono ? " mono" : ""}`}>{reason}</div>}
+        {children}
+        {actions && <div className="fnotice-acts">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Inline field-level validation message (Start form, Register-tool modal).
+function FieldError({ children, mono }) {
+  if (!children) return null;
+  return <div className={`ferr${mono ? " mono" : ""}`}><Icon name="warning" size={12} /> <span>{children}</span></div>;
+}
+
+// ── Needs-you tag ─────────────────────────────────────────────────────────
+// One consistent marker for "this is blocked on you", shown inline in the
+// Tasks and Sessions lists so attention items are spotted in context.
+const NEEDS_META = {
+  awaiting: { cue: "Asked a question", glyph: "awaiting" },
+  confirm:  { cue: "Confirm completion", glyph: "confirm" },
+  stalled:  { cue: "Stalled", glyph: "stalled" },
+  failed:   { cue: "Failed", glyph: "failed" },
+  unknown:  { cue: "Connection lost", glyph: "unknown" },
+};
+function needsMeta(status) { return NEEDS_META[status] || null; }
+function NeedsTag({ status, compact }) {
+  const m = NEEDS_META[status];
+  if (!m) return null;
+  return (
+    <span className={`needs-tag ny--${status}`} title={"Needs you \u2014 " + m.cue}>
+      <span className="needs-tag-glyph stat-glyph"><StatusGlyph status={m.glyph} size={11} /></span>
+      {!compact && <span>{m.cue}</span>}
+    </span>
+  );
+}
+
 Object.assign(window, {
-  fmtDur, fmtAgo, isLive, taskCounts,
-  StatusBadge, Chip, SourceChip, BackendChip, AvailDot, IssueChip,
-  ProgressPill, ResMeter, GroupLabel, EmptyState,
+  fmtDur, fmtAgo, isLive, taskCounts, needsMeta,
+  StatusBadge, Chip, SourceChip, BackendChip, AvailDot, IssueChip, NeedsTag,
+  ProgressPill, ResMeter, GroupLabel, EmptyState, FailureNotice, FieldError,
 });

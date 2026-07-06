@@ -26,6 +26,8 @@
 
   /* functional status palette — hue-distinct, paired w/ icon+label everywhere */
   --st-starting: #0A84FF;
+  --st-await:    #BF5AF2;
+  --st-confirm:  #BF5AF2;  /* same purple family as awaiting: purple = blocked on an operator decision; glyph+label carry the distinction */
   --st-running:  #2DC653;
   --st-stalled:  #FF9F0A;
   --st-failed:   #FF453A;
@@ -58,6 +60,8 @@
   --r-md: 6px; --r-lg: 8px; --r-xl: 10px;
   /* GNOME / libadwaita semantic status palette — Yaru-native */
   --st-starting: #3584E4;   /* blue   */
+  --st-await:    #C061CB;   /* purple */
+  --st-confirm:  #C061CB;   /* purple — same family as awaiting (operator decision) */
   --st-running:  #2EC27E;   /* green  */
   --st-stalled:  #E5A50A;   /* yellow */
   --st-failed:   #E01B24;   /* red    */
@@ -317,6 +321,9 @@ kbd {
    ========================================================================== */
 .stat { --c: var(--st-stopped); display: inline-flex; align-items: center; }
 .stat--starting { --c: var(--st-starting); }
+.stat--await    { --c: var(--st-await); }
+.stat--awaiting { --c: var(--st-await); }
+.stat--confirm  { --c: var(--st-confirm); }
 .stat--running  { --c: var(--st-running); }
 .stat--stalled  { --c: var(--st-stalled); }
 .stat--failed   { --c: var(--st-failed); }

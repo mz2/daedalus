@@ -23,7 +23,7 @@ function TaskStatusBadge({ status, style }) {
 
 // session reference line — the "field" the operator filters/jumps by
 function SessionRef({ t, onOpen }) {
-  const att = ["stalled", "failed", "unknown"].includes(t.sessionStatus);
+  const att = ["stalled", "failed", "unknown", "awaiting", "confirm"].includes(t.sessionStatus);
   return (
     <button className={`sess-ref${att ? " att" : ""}`} onClick={(e) => { e.stopPropagation(); onOpen(t.sessionId); }}
       title={"Open session · " + window.DATA.STATUS_LABEL[t.sessionStatus]}>
@@ -114,7 +114,7 @@ function TaskTableGlobal({ tasks, onOpen, statusStyle }) {
 }
 
 // Grouped multiline list — between the board and the dense table.
-function TaskListGrouped({ tasks, onOpen }) {
+function TaskListGrouped({ tasks, onOpen, statusStyle }) {
   return (
     <div className="tlist">
       {TASK_COLS.map((c) => {
@@ -127,22 +127,26 @@ function TaskListGrouped({ tasks, onOpen }) {
               {c.label}<span className="tlist-gn">{items.length}</span>
             </div>
             <div className="grouped">
-              {items.map((t) => (
-                <div key={t.key} className={`row tlist-row${t.attention ? " att" : ""}`} onClick={() => onOpen(t.sessionId)} tabIndex={0}
+              {items.map((t) => {
+                const needs = (t.status === "doing" || t.status === "blocked") && needsMeta(t.sessionStatus) ? t.sessionStatus : null;
+                return (
+                <div key={t.key} className={`row tlist-row${needs ? " needs ny--" + needs : ""}`} onClick={() => onOpen(t.sessionId)} tabIndex={0}
                   onKeyDown={(e) => { if (e.key === "Enter") onOpen(t.sessionId); }}>
-                  <span className="tlr-glyph"><TaskStatusBadge status={t.status} /></span>
+                  <span className="tlr-glyph"><TaskStatusBadge status={t.status} style={statusStyle} /></span>
                   <span className="tlr-id">{t.id}</span>
                   <div className="tlr-main">
-                    <div className="tlr-title">{t.title}{t.detail && <span className="tlr-detail"> — {t.detail}</span>}</div>
+                    <div className="tlr-title">{t.title}{t.detail && <span className="tlr-detail"> — {t.detail}</span>}{needs && <NeedsTag status={needs} />}</div>
                     <div className="tlr-sub">
-                      <SessionRef t={t} onOpen={onOpen} />
-                      <span className="tlr-meta"><Icon name="tools" size={11} /> {t.toolName}</span>
-                      <span className="tlr-meta"><Icon name="backends" size={11} /> {t.backendName}</span>
+                      <span className="row-branch"><Icon name="git" size={11} /> {t.spec}</span>
+                      <span className="row-meta"><Icon name="tools" size={11} /> {t.toolName}</span>
+                      <span className="row-meta"><Icon name="backends" size={11} /> {t.backendName}</span>
                     </div>
                   </div>
+                  <SessionRef t={t} onOpen={onOpen} />
                   <Icon name="chevR" size={14} className="tlr-chev" />
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         );
@@ -156,7 +160,7 @@ const TFILTERS = [
   { k: "todo", label: "To do" }, { k: "done", label: "Done" },
 ];
 
-function TasksView({ layout, statusStyle, onOpen, onStart }) {
+function TasksView({ layout, statusStyle, onOpen, onStart, needsStrip }) {
   const all = window.DATA.allTasks();
   const [q, setQ] = React.useState("");
   const [active, setActive] = React.useState([]);     // task-status filters
@@ -202,6 +206,8 @@ function TasksView({ layout, statusStyle, onOpen, onStart }) {
         <button className="btn primary" onClick={onStart}><Icon name="plus" size={15} /> Start session</button>
       </header>
 
+      {needsStrip && <NeedsStrip onOpen={onOpen} />}
+
       <div className="fleet-toolbar">
         <div className="searchbox">
           <Icon name="search" size={14} />
@@ -241,7 +247,7 @@ function TasksView({ layout, statusStyle, onOpen, onStart }) {
         ) : layout === "table" ? (
           <TaskTableGlobal tasks={tasks} onOpen={onOpen} statusStyle={statusStyle} />
         ) : layout === "list" ? (
-          <TaskListGrouped tasks={tasks} onOpen={onOpen} />
+          <TaskListGrouped tasks={tasks} onOpen={onOpen} statusStyle={statusStyle} />
         ) : (
           <TaskBoardGlobal tasks={tasks} onOpen={onOpen} />
         )}
