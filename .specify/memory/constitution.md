@@ -1,30 +1,29 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: (template, unversioned) → 1.0.0
-Bump rationale: Initial ratification — placeholders replaced with concrete, project-
-  specific principles and governance. First numbered version.
+Version change: 1.0.0 → 1.1.0
+Bump rationale: MINOR — new principle added (IV. Design Fidelity to the Prototype) plus a
+  corresponding Quality Gate and workflow item.
 
-Modified principles: (none — initial definition)
+Modified principles: (none)
 Added principles:
-  - I. Red/Green Test-Driven Development (NON-NEGOTIABLE)
-  - II. Strict Linting — Warnings Are Errors
-  - III. Locally Testable Runtime Environment
-Added sections:
-  - Quality Gates
-  - Development Workflow
-Removed sections: (none — template placeholders SECTION_2/SECTION_3 given concrete names)
+  - IV. Design Fidelity to the Prototype
+Added sections: (none — Quality Gates and Development Workflow extended in place)
+Removed sections: (none)
 
 Templates requiring updates:
-  - ✅ .specify/templates/plan-template.md — Constitution Check gate is generic; no
-       structural change needed (gates derived from this file at plan time).
-  - ✅ .specify/templates/tasks-template.md — updated: tests reframed as required under
-       TDD; added lint and runtime-environment setup tasks.
-  - ✅ .specify/templates/spec-template.md — "User Scenarios & Testing" already mandatory;
-       no change required.
+  - ✅ .specify/templates/plan-template.md — Constitution Check gate is generic; gates
+       derived from this file at plan time (now includes the design-fidelity gate for
+       UI-touching features).
+  - ✅ .specify/templates/tasks-template.md — no structural change; UI features gain a
+       validate-against-prototype step via the gate.
+  - ✅ .specify/templates/spec-template.md — no change required.
   - ✅ README.md — references constitution generically; no change required.
 
 Follow-up TODOs: (none)
+
+Previous version (1.0.0) sync report: initial ratification — principles I–III, Quality
+Gates, Development Workflow.
 -->
 
 # daedalus Constitution
@@ -86,6 +85,30 @@ before it is considered complete:
 practical. An agent or developer who cannot run the code locally cannot honestly verify it
 works, and CI becomes the only — far slower — feedback loop.
 
+### IV. Design Fidelity to the Prototype
+
+The HTML-based design prototypes in `design/` (the runnable `design/prototype/` sources and
+their exports) are the **visual and interaction source of truth** for the operator UI.
+Any design for production UI code MUST be validated against them:
+
+- Before implementing a screen, component, or state, the implementation design (view
+  model, layout, tokens, behavior) MUST be checked against the corresponding prototype
+  screen/state — including the cross-cutting states (empty, loading, error, degraded,
+  blocked-on-operator) and both themes and platform skins, as catalogued in
+  `design/README.md` and reproduced via `design/storyboards.md`.
+- Deviations from the prototype MUST be deliberate and recorded (in the plan or the
+  design/README mapping), never silent drift; unresolved conflicts escalate to a design
+  update first, not an implementation-side improvisation.
+- New UI work with no prototype counterpart MUST get a prototype (or an explicit recorded
+  exemption) before production implementation begins.
+- Verification of a UI change includes comparing the running native UI against the
+  prototype rendering of the same screen and state.
+
+**Rationale**: The prototype is where design decisions are made, reviewed, and kept
+coherent (tokens, status palette, accessibility). Validating implementation designs
+against it keeps the native GPUI port faithful and prevents the design system from
+forking between artifact and product.
+
 ## Quality Gates
 
 These gates are enforced on every change before merge:
@@ -98,6 +121,9 @@ These gates are enforced on every change before merge:
   runtime path; the quickstart/run instructions are updated when they change.
 - **No silent scope-narrowing**: skipped tests, disabled lint rules, or stubbed runtime
   paths are called out explicitly in the change description, never slipped in quietly.
+- **Design validated against the prototype**: for UI-touching changes, the implementation
+  design was checked against the `design/` HTML prototype for the same screens and states,
+  and any deviation is recorded (Principle IV).
 
 ## Development Workflow
 
@@ -108,9 +134,11 @@ These gates are enforced on every change before merge:
   a local runtime path) before Phase 0 research and again after Phase 1 design.
 - Task lists MUST include, where applicable: linter/formatter configuration, a local
   runtime/quickstart path, and tests written before their implementation tasks.
+- UI-touching plans and tasks MUST name the prototype screens/states they implement and
+  include a validate-against-prototype step (Principle IV).
 - Code review MUST confirm constitution compliance; a reviewer rejects changes that add
-  behavior without a prior failing test, carry unjustified lint suppressions, or cannot be
-  run locally.
+  behavior without a prior failing test, carry unjustified lint suppressions, cannot be
+  run locally, or implement UI that was not validated against the design prototype.
 
 ## Governance
 
@@ -131,4 +159,4 @@ practice and this document conflict, this document wins.
 - **Runtime guidance**: agent and contributor runtime guidance lives in `README.md` and
   feature `quickstart.md` files; these MUST stay consistent with Principle III.
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-06 | **Last Amended**: 2026-06-06
+**Version**: 1.1.0 | **Ratified**: 2026-06-06 | **Last Amended**: 2026-07-06

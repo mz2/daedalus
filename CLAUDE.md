@@ -39,11 +39,14 @@ cargo test --workspace                                 # unit + contract + integ
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Code Style & Principles (constitution v1.0.0)
+## Code Style & Principles (constitution v1.1.0)
 
 - **TDD (non-negotiable)**: write a failing test first; red → green → refactor. Bugs start with a regression test.
 - **Strict linting**: `clippy -D warnings` + `rustfmt`; no blanket `#[allow(...)]` (narrow + justified only).
 - **Locally testable**: every change runnable locally via the `fake` backend / quickstart.
+- **Design fidelity**: UI implementation designs MUST be validated against the HTML prototypes in
+  `design/prototype/` (screens, states, themes, skins — see `design/README.md` + `design/storyboards.md`);
+  deviations are recorded, never silent; UI without a prototype counterpart gets a prototype first.
 - **Shared core, thin surfaces**: orchestration lives in `daedalus-core`; surfaces issue commands/queries only.
 - **Sandbox isolation is absolute**; **local-first, no open listener**; **secrets never persisted/displayed**.
 
