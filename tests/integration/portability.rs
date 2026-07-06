@@ -102,14 +102,13 @@ async fn lifecycle_is_identical_on_the_fake_backend() {
     run_lifecycle(&app, BackendKind::Fake, dir.path()).await;
 }
 
-#[cfg(target_os = "macos")]
 #[tokio::test]
-async fn lifecycle_is_identical_on_the_macos_backend() {
-    // Only runs on macOS where the Seatbelt backend is available (SC-008 real-backend leg).
-    let backend = Arc::new(daedalus_backend_macos::MacosBackend::new());
+async fn lifecycle_is_identical_on_the_workshop_backend() {
+    // Only runs where a Workshop control interface is reachable (SC-008 real-backend leg).
+    let backend = Arc::new(daedalus_backend_workshop::WorkshopBackend::default());
     if backend.availability().await != daedalus_proto::Availability::Available {
         return;
     }
     let (app, dir) = app_for(backend);
-    run_lifecycle(&app, BackendKind::MacosSandbox, dir.path()).await;
+    run_lifecycle(&app, BackendKind::Workshop, dir.path()).await;
 }

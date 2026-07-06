@@ -46,7 +46,11 @@ run is now verified on macOS** (2026-07-06, Apple silicon): app launched against
 Needs-you queue → answer-mode deep link → session detail (telemetry rail incl. the connection-lost
 treatment, restored terminal) exercised end-to-end and screenshot-compared with the prototype — closing
 T067's open macOS leg. Known renderer gap: live AccessKit wiring still pending (T065 note). Only
-**T066** (perf validation on real backends/hardware) remains open.
+**T066** (perf validation on real backends/hardware) remains open. **Scope amendment (2026-07-06, later the
+same day)**: the operator directed that Daedalus never maintains its own sandbox implementation — the
+bespoke macOS Seatbelt backend (T025) was **removed**; local isolation on macOS arrives via integrated
+agent-oriented runtimes (NVIDIA OpenShell backend, repo issue #9). FR-027/SC-013 amended accordingly;
+the SC-008 portability suite now exercises fake + Workshop.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -113,7 +117,7 @@ confirm it reports "running" with a unique id while the host filesystem/processe
 - [X] T022 [US1] Implement the start-session flow in `crates/daedalus-core/src/session/start.rs` (bind tool/objective/env/source, assign unique id, fresh-vs-pre-existing, worktree for pre-existing — FR-001/002/002a/003/005)
 - [X] T023 [US1] Wire `StartSession`/`RegisterTool` through `daedalus-app` to core (FR-006)
 - [X] T024 [P] [US1] Implement the Workshop backend `acquire`/`start_agent` in `crates/daedalus-backend-workshop/src/lib.rs` (Linux; confirm control surface — R-WS)
-- [X] T025 [P] [US1] Implement the macOS sandbox backend `acquire`/`start_agent` in `crates/daedalus-backend-macos/src/lib.rs` (Seatbelt/App Sandbox; must meet SC-002 — R-MAC)
+- [X] T025 [P] [US1] ~~Implement the macOS sandbox backend `acquire`/`start_agent` (Seatbelt/App Sandbox)~~ — **removed 2026-07-06** per the no-bespoke-sandbox scope amendment (see header note; replacement tracked in repo issue #9)
 - [X] T026 [US1] Build the GPUI Start-session flow screen in `apps/desktop/src/screens/start.rs` (tool pick → SDD objective ref → env choice w/ worktree note → backend choice → launch) per design-brief §6.3, incl. validation/provisioning-failure states
 
 **Checkpoint**: US1 is independently demoable on the fake backend — the MVP.

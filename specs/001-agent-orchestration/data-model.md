@@ -128,7 +128,7 @@ A source of sandbox environments behind the common abstraction (FR-027).
 | Field | Type | Notes |
 |-------|------|-------|
 | `id` | BackendId | |
-| `kind` | BackendKind | `Workshop | MacosSandbox | Fake | …` |
+| `kind` | BackendKind | `Workshop | Fake | …` — variants added per integrated runtime (never bespoke isolation; 2026-07-06 amendment) |
 | `availability` | Availability | `Available | Degraded | Unavailable` (FR-028) |
 | `availability_reason` | Option\<String\> | stated reason when degraded/unavailable (FR-028), e.g. "high memory pressure" |
 | `capabilities` | BackendCapabilities | limits, supports-fresh, supports-preexisting |

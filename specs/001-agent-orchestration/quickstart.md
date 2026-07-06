@@ -13,7 +13,6 @@ developer's (or agent's) machine **without** Canonical Workshop or any remote ac
 - Desktop GPU/runtime for **GPUI**:
   - macOS: full Xcode + the Metal Toolchain component (`xcodebuild -downloadComponent MetalToolchain`).
   - Linux: Vulkan-capable drivers (GPUI's Blade backend) + standard build tooling.
-- macOS only, for the `macos` backend: `sandbox-exec` (system-provided).
 
 > Pin the `gpui` / `gpui-component` revisions in `Cargo.toml` (sourced from their git repos); validate the
 > desktop build on both macOS and Linux early (research risk R-UI).
@@ -62,7 +61,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Backends beyond `fake`
 
-- **macOS sandbox**: `DAEDALUS_BACKEND=macos cargo run -p daedalus-desktop` (macOS host; validates SC-002
+- **macOS local isolation**: no bespoke backend (2026-07-06 scope amendment — Daedalus integrates
+  existing agent-oriented sandbox runtimes instead; NVIDIA OpenShell backend tracked in issue #9;
   isolation locally).
 - **Workshop (Linux)**: requires a reachable Workshop control interface; on macOS, reach a remote Linux
   Workshop over an operator-established authenticated tunnel (no open listener by default).

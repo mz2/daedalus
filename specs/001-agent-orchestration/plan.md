@@ -13,8 +13,11 @@ Daedalus is a single-operator, local-first application for orchestrating and mon
 agentic tools that run inside isolated sandbox environments. The operator starts **sessions** (an agentic
 tool working an SDD-defined objective inside an environment), watches them through an embedded terminal
 and a per-session task-status board, discovers sessions across local/mDNS/tunneled-Workshop sources,
-attaches via zellij, and controls lifecycle (stop / send-input / clean-up). v1 ships two backends —
-Canonical Workshop (Linux) and a macOS-specific local sandbox — behind one common abstraction.
+attaches via zellij, and controls lifecycle (stop / send-input / clean-up). v1 ships the Canonical
+Workshop (Linux) backend behind one common abstraction (plus `fake` for local testing); Daedalus never
+implements its own isolation — further backends integrate existing agent-oriented sandbox runtimes
+(amended 2026-07-06; the bespoke macOS Seatbelt backend was removed, NVIDIA OpenShell is the planned
+integrated runtime incl. macOS/Apple silicon — repo issue #9).
 
 **Technical approach**: a single shared **Rust core** owns all orchestration (sessions + state machine,
 backend abstraction, discovery, persistence, reconciliation). The presentation surface is a genuinely
@@ -47,8 +50,9 @@ values, and the component/screen inventory in `design/README.md`. The GPUI theme
 terminal engine for the GPUI terminal view); `tokio` (async runtime); zellij (session multiplexing/attach);
 `mdns-sd` or equivalent (mDNS discovery); an authenticated-tunnel mechanism (operator-established, e.g.
 SSH/WireGuard-style); `serde` (+ `serde_json`) for the shared contract types; `sqlx`/`rusqlite` (SQLite
-persistence); a macOS sandbox primitive (Seatbelt `sandbox-exec` / App Sandbox container); the Canonical
-Workshop control interface for the Workshop backend.  
+persistence); the Canonical
+Workshop control interface for the Workshop backend (further backends integrate existing agent-oriented
+sandbox runtimes, e.g. the NVIDIA OpenShell CLI — never Daedalus-maintained isolation primitives).  
 **Storage**: SQLite (single local file) for session metadata, status, tracked-task history, and a
 lifecycle/event log; captured terminal output persisted to per-session capture files referenced from the
 DB. Retain-until-deleted (no auto-expiry in v1).  
@@ -57,7 +61,8 @@ backend trait, the in-Workshop SDK protocol, discovery, and persistence; integra
 (incl. adversarial agents), lifecycle state transitions, discovery de-duplication, and restart
 reconciliation. UI-toolkit-specific test runner per the research decision.  
 **Target Platform**: macOS (Apple silicon + Intel) and Linux desktop for the native GPUI GUI (Windows not a
-v1 target; web surface deferred); Linux for Workshop-hosted agents; macOS for the local-sandbox backend.  
+v1 target; web surface deferred); Linux for Workshop-hosted agents; macOS reaches remote Workshops over tunnels (local isolation on macOS
+arrives with the integrated OpenShell backend, issue #9).  
 **Project Type**: Native desktop application over a shared Rust core (Cargo workspace); surface-agnostic
 core leaves a web surface as a future addition.  
 **Performance Goals**: agent output visible in the embedded terminal within 5s of production (SC-003);
@@ -68,7 +73,8 @@ discover→connect within 10s (SC-009); UI targets 60fps on desktop-class hardwa
 remote reach only via operator-established authenticated tunnels (FR-033); genuinely native desktop GUI,
 no Electron/webview shell (FR-007b); 100% sandbox isolation incl. adversarial agents (SC-002); secrets
 never managed, injected, or persisted (FR-031); WCAG AA + color-blind-safe status in both themes.  
-**Scale/Scope**: single operator; ≥10 concurrent sessions; 2 backends in v1 (extensible); ~8 primary
+**Scale/Scope**: single operator; ≥10 concurrent sessions; Workshop + fake backends in v1 (extensible
+via integrated agent-sandbox runtimes); ~8 primary
 screens (per the design brief), desktop-only for now; open set of operator-registered agentic tools.
 
 **UI decision (resolved in research.md §R1)**: native desktop GUI with **GPUI + gpui-component** (Rust,
@@ -85,7 +91,7 @@ Constitution v1.1.0 — four principles plus Quality Gates.
 |-----------|----------------------------|--------|
 | **I. Red/Green TDD (NON-NEGOTIABLE)** | Every contract (backend trait, SDK advertisement protocol, discovery, persistence) and every behavior (session state machine, dedup, reconciliation, isolation) gets a failing test before implementation. tasks.md will order test tasks ahead of their implementation tasks. | ✅ PASS |
 | **II. Strict Linting — Warnings Are Errors** | Rust: `cargo clippy -D warnings` + `rustfmt --check` in CI; no blanket `#[allow]`. UI: linter chosen with the toolkit (`dart analyze`/`flutter analyze` for Flutter, or `clippy -D warnings` for Slint/egui). Web assets (if any) linted likewise. | ✅ PASS |
-| **III. Locally Testable Runtime Environment** | A documented single-command build/run path (quickstart.md). A `daedalus-backend-fake` in-memory backend lets sessions, discovery, persistence, and lifecycle be exercised locally **without** Workshop or remote access; the macOS sandbox backend is locally testable on macOS. Workshop integration is verified via the fake backend + contract tests where Workshop is unavailable. | ✅ PASS |
+| **III. Locally Testable Runtime Environment** | A documented single-command build/run path (quickstart.md). A `daedalus-backend-fake` in-memory backend lets sessions, discovery, persistence, and lifecycle be exercised locally **without** Workshop or remote access; real-backend testing runs against Workshop where reachable (the bespoke macOS backend was removed 2026-07-06). Workshop integration is verified via the fake backend + contract tests where Workshop is unavailable. | ✅ PASS |
 | **IV. Design Fidelity to the Prototype** (added in v1.1.0) | The canonical runnable prototype is `design/prototype/` (screens, cross-cutting states, both themes × skins), catalogued in `design/README.md` and reproducible via `design/storyboards.md`. Every GPUI screen/component task names its prototype counterpart and includes a validate-against-prototype step; deviations are recorded in `design/README.md`, and UI with no prototype counterpart gets a prototype first (as done for the Needs-you queue before US6 was tasked). | ✅ PASS |
 
 **Quality Gates** (tests green, lint clean, locally exercised, no silent scope-narrowing) are encoded into
@@ -128,8 +134,8 @@ crates/
 │                                   #   status) consumed by core + every surface
 ├── daedalus-backend/               # Backend trait + common environment/provisioning types
 ├── daedalus-backend-workshop/      # Canonical Workshop (Linux) backend
-├── daedalus-backend-macos/         # macOS local sandbox backend (Seatbelt/App Sandbox)
 ├── daedalus-backend-fake/          # In-memory backend for local testing (Principle III)
+│                                   #   (further backends integrate existing agent sandboxes, issue #9)
 ├── daedalus-discovery/             # mDNS, tunnel registry, multi-source de-duplication
 ├── daedalus-zellij/                # zellij multiplexing/attach + native terminal-view glue
 ├── daedalus-sdk/                   # In-Workshop SDK advertising a connectable service

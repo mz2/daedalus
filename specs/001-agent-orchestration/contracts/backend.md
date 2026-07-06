@@ -1,6 +1,8 @@
 # Contract: Backend abstraction
 
-**Crate**: `daedalus-backend` (trait) — implemented by `daedalus-backend-{workshop,macos,fake}`.
+**Crate**: `daedalus-backend` (trait) — implemented by `daedalus-backend-{workshop,fake}`; further
+backends integrate existing agent-oriented sandbox runtimes (e.g. NVIDIA OpenShell, issue #9) — Daedalus
+never implements its own isolation primitives (2026-07-06 amendment).
 **Satisfies**: FR-004, FR-005, FR-002/002a, FR-022/024, FR-027/028, SC-002, SC-013.
 
 All sandbox backends MUST implement one common async trait. Adding a backend MUST NOT change the operator
@@ -51,5 +53,4 @@ pub trait Backend: Send + Sync {
 | Backend | Isolation primitive | Notes |
 |---------|---------------------|-------|
 | `workshop` | Canonical Workshop (Linux) env | exact control surface confirmed during impl (R-WS) |
-| `macos` | Seatbelt `sandbox-exec` / App Sandbox container | must meet SC-002 (R-MAC) |
 | `fake` | in-process simulation | Principle III local testability; drives all contract tests |

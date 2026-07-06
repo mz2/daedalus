@@ -11,16 +11,18 @@ Auto-generated from all feature plans. Last updated: 2026-07-06
 - **Async/runtime**: `tokio`. **Persistence**: SQLite (`sqlx`/`rusqlite`) + file-backed output capture.
 - **Multiplex/discovery**: zellij; mDNS (`mdns-sd`); operator-established authenticated tunnels (no open
   listener by default).
-- **Backends**: `workshop` (Canonical Workshop, Linux), `macos` (Seatbelt/App Sandbox), `fake` (local testing).
-- **Design system**: locked to `design/` (canonical `design/Daedalus-Prototype-standalone.html`; GPUI mapping
-  in `design/README.md`) — Yaru/mac skins, dark+light, color-blind-safe status palette (icon+label). Port it.
+- **Backends**: `workshop` (Canonical Workshop, Linux) + `fake` (local testing). Daedalus NEVER implements
+  its own isolation — further backends integrate existing agent sandboxes (NVIDIA OpenShell planned, issue #9).
+- **Design system**: locked to `design/` (canonical runnable prototype `design/prototype/`, 2026-07-03; GPUI
+  mapping in `design/README.md`, storyboards in `design/storyboards.md`) — Yaru/mac skins, dark/light/system
+  themes, color-blind-safe status palette (icon+label). Port it; validate against it (constitution IV).
 
 ## Project Structure
 
 ```text
 crates/
   daedalus-core/        daedalus-proto/        daedalus-app/
-  daedalus-backend/     daedalus-backend-workshop/  daedalus-backend-macos/  daedalus-backend-fake/
+  daedalus-backend/     daedalus-backend-workshop/  daedalus-backend-fake/
   daedalus-discovery/   daedalus-zellij/       daedalus-sdk/
 apps/
   desktop/              # GPUI surface (apps/web/ deferred)

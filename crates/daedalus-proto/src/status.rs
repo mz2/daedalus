@@ -150,8 +150,6 @@ pub enum SourceKind {
 pub enum BackendKind {
     /// Canonical Workshop (Linux).
     Workshop,
-    /// macOS local sandbox (Seatbelt / App Sandbox).
-    MacosSandbox,
     /// In-memory fake backend for local testing (Principle III).
     Fake,
 }
@@ -162,7 +160,6 @@ impl BackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             BackendKind::Workshop => "workshop",
-            BackendKind::MacosSandbox => "macos",
             BackendKind::Fake => "fake",
         }
     }

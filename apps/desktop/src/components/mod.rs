@@ -122,7 +122,6 @@ impl Chip {
     pub fn backend(kind: BackendKind, availability: Availability, theme: &Theme) -> Self {
         let (icon, label) = match kind {
             BackendKind::Workshop => ("linux", "Workshop"),
-            BackendKind::MacosSandbox => ("apple", "macOS"),
             BackendKind::Fake => ("backends", "Fake"),
         };
         Self {
@@ -335,8 +334,8 @@ mod tests {
         assert_eq!(ok.label, "Workshop");
         assert_eq!(ok.dot, None, "an available chip renders no dot");
 
-        let degraded = Chip::backend(BackendKind::MacosSandbox, Availability::Degraded, &theme);
-        assert_eq!(degraded.label, "macOS");
+        let degraded = Chip::backend(BackendKind::Fake, Availability::Degraded, &theme);
+        assert_eq!(degraded.label, "Fake");
         assert_eq!(
             degraded.dot,
             Some(theme.status_color(StatusTone::Stalled)),

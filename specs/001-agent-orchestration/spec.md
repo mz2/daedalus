@@ -60,6 +60,14 @@ home, session event timeline, visible output trimming, system theme, degraded av
   "waiting for input".
 - Q: Where are per-backend idle rates configured? → A: In Settings, alongside the concurrency limit;
   they are optional — with no rate set, the queue omits the cost estimate and shows waiting time only.
+- Q: Does Daedalus implement its own sandboxing (e.g., a Seatbelt profile on macOS)? → A: **No —
+  amended 2026-07-06.** Daedalus never maintains its own isolation implementation; it integrates
+  existing, purpose-built agent-oriented sandbox runtimes and environment providers behind the FR-027
+  backend abstraction (Canonical Workshop; NVIDIA OpenShell — which supports macOS on Apple silicon).
+  The bespoke Seatbelt/`sandbox-exec` backend was removed. This supersedes the 2026-06-06 clarification
+  that named a "macOS-specific local sandbox backend" as a v1 requirement: on macOS, v1 orchestrates
+  remote Workshops over authenticated tunnels, and local isolation arrives via integrated runtimes
+  (tracked as a planned backend).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -426,10 +434,13 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 - **FR-026**: System MUST support running multiple agents concurrently, up to a configurable limit,
   without sessions interfering with one another.
 - **FR-027**: System MUST support more than one kind of sandbox backend through a common backend
-  abstraction. For v1 this MUST include both Canonical Workshop (Linux) and a macOS-specific local
-  sandbox backend, plus the ability to add further backends, all without changing the operator's
-  orchestrate/monitor/control workflow. On macOS, operators MUST also be able to orchestrate remote Linux
-  Workshop environments over authenticated tunnels.
+  abstraction, without changing the operator's orchestrate/monitor/control workflow across backends.
+  For v1 this MUST include Canonical Workshop (Linux). Backends MUST integrate existing, purpose-built
+  sandbox/environment runtimes — the system MUST NOT implement its own isolation primitives (e.g., no
+  Daedalus-maintained Seatbelt profiles; amended 2026-07-06). Local isolation on macOS is provided by
+  integrating an agent-oriented sandbox runtime (planned: NVIDIA OpenShell, which supports macOS on
+  Apple silicon). On macOS, operators MUST be able to orchestrate remote Linux Workshop environments
+  over authenticated tunnels.
 - **FR-028**: System MUST detect and clearly indicate when a configured backend or host is unavailable
   or degraded (with a stated reason, e.g., resource pressure), while continuing to operate sessions on
   other available backends and making that continuity explicit to the operator. Availability MUST be
@@ -535,7 +546,9 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   with no operator-established tunnel, the control plane is reachable only from the operator's local
   context.
 - **SC-013**: A session can be started and monitored on Linux using a Canonical Workshop environment and
-  on macOS using the macOS-specific local sandbox backend, with the same operator workflow on both.
+  on macOS against a remote Workshop over an authenticated tunnel, with the same operator workflow on
+  both. (Amended 2026-07-06: local isolation on macOS lands with an integrated agent-oriented runtime
+  backend — when delivered, the same criterion applies to it unchanged.)
 - **SC-014**: 100% of sessions in a blocked-on-operator state (waiting for input, awaiting confirmation,
   stalled, failed, disconnected) appear in the Needs-you queue within 5 seconds of entering that state,
   and activating any entry lands the operator in that session with the matching affordance focused in a
@@ -546,10 +559,12 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
 
 ## Assumptions
 
-- **Backend scope for the first release**: v1 supports two sandbox backends through a common abstraction —
-  Canonical Workshop (Linux) and a macOS-specific local sandbox. Workshop does not run on macOS today, so
-  macOS operators use the local macOS sandbox backend and/or orchestrate remote Linux Workshops over
-  authenticated tunnels. Further backends remain a planned extension.
+- **Backend scope for the first release**: v1 ships Canonical Workshop (Linux) behind the common backend
+  abstraction, plus the `fake` backend for local testing. Daedalus never implements its own isolation —
+  backends integrate existing, purpose-built runtimes (amended 2026-07-06; the bespoke macOS Seatbelt
+  backend was removed). Workshop does not run on macOS, so macOS operators orchestrate remote Linux
+  Workshops over authenticated tunnels; local isolation on macOS arrives with an integrated
+  agent-oriented runtime backend (planned: NVIDIA OpenShell, Apple silicon).
 - **Interface is a shared-core, multi-surface application**: The operator surface is a single Daedalus
   application with an embedded terminal and a per-session task-status board, structured as a shared
   application core with separate presentation layers — a genuinely native desktop GUI (macOS and Linux)

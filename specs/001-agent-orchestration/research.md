@@ -122,7 +122,11 @@ technology — rejected: the registry abstraction costs little and avoids lock-i
 `teardown`, `availability`) with environment/session value types in `daedalus-backend`. v1 implements:
 - **Workshop (Linux)** — drives Canonical Workshop's control interface to provision/attach environments and
   launch the agent inside, under zellij.
-- **macOS local sandbox** — confines an agent on macOS using Seatbelt (`sandbox-exec`) / App Sandbox
+- **macOS local sandbox** — ~~confines an agent on macOS using Seatbelt~~ **superseded (2026-07-06)**:
+  the operator decided Daedalus never maintains its own sandbox implementation; local isolation comes from
+  integrating existing agent-oriented sandbox runtimes (NVIDIA OpenShell supports macOS on Apple silicon —
+  repo issue #9). The bespoke Seatbelt backend was removed. Original text: confines an agent using
+  Seatbelt (`sandbox-exec`) / App Sandbox
   container primitives, under zellij.
 - **Fake (in-memory)** — required by Principle III for local testing without Workshop/remote access.
 
@@ -131,8 +135,8 @@ workflow; the fake backend makes the whole core locally exercisable.
 
 **Alternatives**: hard-coding Workshop only — rejected (fails FR-027, SC-013, and local testability).
 Risk R-WS: the exact Workshop control surface must be confirmed against Workshop docs during contract work;
-Risk R-MAC: Seatbelt is deprecated-but-functional on macOS — validate it meets SC-002 isolation, with App
-Sandbox containers as the fallback primitive.
+Risk R-MAC — **closed (2026-07-06)**: moot after the amendment above; the Seatbelt backend was removed
+before real-hardware validation. SC-002 obligations transfer to the integrated runtime backends (issue #9).
 
 ## R6. Persistence & reconciliation
 
@@ -207,5 +211,5 @@ UI — explicitly out of scope (design brief §12).
 - **R-Z** — zellij integration underpins attach/multiplexing; validate the native terminal-view attach path
   (alacritty_terminal + zellij) early.
 - **R-WS** — exact Canonical Workshop control surface to be confirmed during contract work.
-- **R-MAC** — macOS Seatbelt isolation must be proven to meet SC-002 (App Sandbox containers as fallback).
+- **R-MAC** — closed 2026-07-06: bespoke Seatbelt backend removed (integrate agent-oriented runtimes instead, issue #9).
 - **R-A11Y** — validate WCAG-AA + AccessKit coverage in GPUI against the design brief.

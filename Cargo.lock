@@ -1480,17 +1480,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daedalus-backend-macos"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "daedalus-backend",
- "daedalus-proto",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "daedalus-backend-workshop"
 version = "0.1.0"
 dependencies = [
@@ -1531,7 +1520,6 @@ dependencies = [
  "daedalus-app",
  "daedalus-backend",
  "daedalus-backend-fake",
- "daedalus-backend-macos",
  "daedalus-backend-workshop",
  "daedalus-core",
  "daedalus-discovery",
@@ -1588,7 +1576,7 @@ dependencies = [
  "daedalus-app",
  "daedalus-backend",
  "daedalus-backend-fake",
- "daedalus-backend-macos",
+ "daedalus-backend-workshop",
  "daedalus-core",
  "daedalus-discovery",
  "daedalus-proto",
