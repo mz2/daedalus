@@ -63,11 +63,17 @@ home, session event timeline, visible output trimming, system theme, degraded av
 - Q: Does Daedalus implement its own sandboxing (e.g., a Seatbelt profile on macOS)? → A: **No —
   amended 2026-07-06.** Daedalus never maintains its own isolation implementation; it integrates
   existing, purpose-built agent-oriented sandbox runtimes and environment providers behind the FR-027
-  backend abstraction (Canonical Workshop; NVIDIA OpenShell — which supports macOS on Apple silicon).
-  The bespoke Seatbelt/`sandbox-exec` backend was removed. This supersedes the 2026-06-06 clarification
-  that named a "macOS-specific local sandbox backend" as a v1 requirement: on macOS, v1 orchestrates
-  remote Workshops over authenticated tunnels, and local isolation arrives via integrated runtimes
-  (tracked as a planned backend).
+  backend abstraction. The bespoke Seatbelt/`sandbox-exec` backend was removed. This supersedes the
+  2026-06-06 clarification that named a "macOS-specific local sandbox backend" as a v1 requirement: on
+  macOS, v1 orchestrates remote Workshops over authenticated tunnels, and local isolation arrives via
+  integrated runtimes.
+- Q: Which agent sandboxes will Daedalus integrate for local isolation on macOS? → A: **All three
+  (decided 2026-07-06)**, each a planned backend giving the operator a per-workload choice:
+  **NVIDIA OpenShell** (Linux + macOS on Apple silicon via Docker Desktop; policy-governed Linux
+  containers — agents get a Linux environment; GPU on Linux hosts only), **Anthropic `sandbox-runtime` (srt)** (native macOS processes under
+  Anthropic-maintained Seatbelt policies — for agents needing the host macOS/Xcode toolchain), and
+  **CodeRunner** (VM-grade isolation on Apple silicon via Apple's `container` runtime). None are v1
+  scope; all satisfy the never-our-own-isolation rule.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -438,9 +444,10 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   For v1 this MUST include Canonical Workshop (Linux). Backends MUST integrate existing, purpose-built
   sandbox/environment runtimes — the system MUST NOT implement its own isolation primitives (e.g., no
   Daedalus-maintained Seatbelt profiles; amended 2026-07-06). Local isolation on macOS is provided by
-  integrating an agent-oriented sandbox runtime (planned: NVIDIA OpenShell, which supports macOS on
-  Apple silicon). On macOS, operators MUST be able to orchestrate remote Linux Workshop environments
-  over authenticated tunnels.
+  integrating agent-oriented sandbox runtimes — planned: NVIDIA OpenShell (Linux containers; GPU on Linux hosts),
+  Anthropic `sandbox-runtime` (native macOS processes), and CodeRunner (VM isolation via Apple's
+  `container` runtime); the operator picks per workload. On macOS, operators MUST be able to
+  orchestrate remote Linux Workshop environments over authenticated tunnels.
 - **FR-028**: System MUST detect and clearly indicate when a configured backend or host is unavailable
   or degraded (with a stated reason, e.g., resource pressure), while continuing to operate sessions on
   other available backends and making that continuity explicit to the operator. Availability MUST be
@@ -563,8 +570,9 @@ affordance focused. Delivers a complete blocked-on-operator triage loop.
   abstraction, plus the `fake` backend for local testing. Daedalus never implements its own isolation —
   backends integrate existing, purpose-built runtimes (amended 2026-07-06; the bespoke macOS Seatbelt
   backend was removed). Workshop does not run on macOS, so macOS operators orchestrate remote Linux
-  Workshops over authenticated tunnels; local isolation on macOS arrives with an integrated
-  agent-oriented runtime backend (planned: NVIDIA OpenShell, Apple silicon).
+  Workshops over authenticated tunnels; local isolation on macOS arrives with the integrated
+  agent-oriented runtime backends (planned trio, decided 2026-07-06: NVIDIA OpenShell, Anthropic
+  `sandbox-runtime`, CodeRunner — see Clarifications).
 - **Interface is a shared-core, multi-surface application**: The operator surface is a single Daedalus
   application with an embedded terminal and a per-session task-status board, structured as a shared
   application core with separate presentation layers — a genuinely native desktop GUI (macOS and Linux)
