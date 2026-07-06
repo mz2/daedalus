@@ -6,10 +6,10 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use daedalus_proto::{Availability, DiscoveredSession, DiscoveredSessionId, SourceId, SourceKind};
+use daedalus_proto::{Availability, DiscoveredSession, SourceId, SourceKind};
 use daedalus_sdk::Advertisement;
 
-use crate::DiscoverySource;
+use crate::{advertised_session, DiscoverySource};
 
 /// One operator-configured tunnel entry. Daedalus dials `local_endpoint` only.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,20 +49,14 @@ impl TunnelSource {
     }
 
     fn to_discovered(&self, target: &TunnelTarget, ad: Advertisement) -> DiscoveredSession {
-        DiscoveredSession {
-            id: DiscoveredSessionId {
-                source: self.id,
-                identity: ad.session_identity,
-            },
-            kind: SourceKind::TunneledWorkshop,
-            source_availability: Availability::Available,
-            zellij_session: ad.connect.zellij_session,
-            host_label: format!("{} ({})", ad.connect.host_label, target.name),
-            status: None,
-            attachable: true,
-            attach_reason: None,
-            artifacts: Some(ad.artifacts),
-        }
+        advertised_session(
+            self.id,
+            ad.session_identity,
+            SourceKind::TunneledWorkshop,
+            ad.connect.zellij_session,
+            format!("{} ({})", ad.connect.host_label, target.name),
+            Some(ad.artifacts),
+        )
     }
 }
 

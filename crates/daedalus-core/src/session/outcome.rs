@@ -41,35 +41,35 @@ impl Core {
             return Ok(session.status);
         }
 
-        let trigger = match signal {
-            AgentSignal::Crashed => Trigger::AgentCrashed,
-            AgentSignal::NoProgress => Trigger::StallDetected,
-            AgentSignal::Progress => Trigger::ProgressResumed,
+        let (trigger, mut note) = match signal {
+            AgentSignal::Crashed => (
+                Trigger::AgentCrashed,
+                Some("agent crashed or exited abnormally".to_string()),
+            ),
+            AgentSignal::NoProgress => (
+                Trigger::StallDetected,
+                Some(format!(
+                    "no progress for {}s",
+                    self.config.lock().expect("poisoned").stall_interval_secs
+                )),
+            ),
+            AgentSignal::Progress => (Trigger::ProgressResumed, None),
             AgentSignal::ExitedCleanly => {
                 let tasks = self.store.list_tasks(id)?;
                 let all_done = !tasks.is_empty()
                     && tasks
                         .iter()
                         .all(|t| t.status == daedalus_proto::TaskStatus::Done);
-                if all_done {
+                let trigger = if all_done {
                     Trigger::AllTasksDone
                 } else {
                     Trigger::AgentExitedWithUnfinishedTasks
-                }
+                };
+                (trigger, None)
             }
         };
 
-        let next = transition(session.status, trigger)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
-
-        let mut note = match signal {
-            AgentSignal::Crashed => Some("agent crashed or exited abnormally".to_string()),
-            AgentSignal::NoProgress => Some(format!(
-                "no progress for {}s",
-                self.config.lock().expect("poisoned").stall_interval_secs
-            )),
-            _ => None,
-        };
+        let next = transition(session.status, trigger)?;
         let ended = next.is_terminal().then(clock::now);
         if next == SessionStatus::AwaitingConfirmation {
             // A clean exit awaiting confirmation carries the exit code and the agent's
@@ -112,8 +112,7 @@ impl Core {
         prompt: &str,
     ) -> Result<SessionStatus, CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
-        let next = transition(session.status, Trigger::InputRequested)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        let next = transition(session.status, Trigger::InputRequested)?;
         self.store
             .set_session_waiting(id, Some(prompt), Some(clock::now()))?;
         self.store.set_session_status(id, next, None, None)?;
@@ -125,8 +124,7 @@ impl Core {
     /// waiting anchor (the answer was delivered, or the agent unblocked itself).
     pub fn clear_waiting_for_input(&self, id: SessionId) -> Result<SessionStatus, CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
-        let next = transition(session.status, Trigger::InputProvided)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        let next = transition(session.status, Trigger::InputProvided)?;
         self.store.set_session_waiting(id, None, None)?;
         self.store.set_session_status(id, next, None, None)?;
         self.record_lifecycle(id, next, None);
@@ -146,15 +144,27 @@ impl Core {
         else {
             return Ok(());
         };
-        let Ok(re) = regex::Regex::new(&pattern) else {
-            return Ok(()); // validated at registration; never fail the output path
+        // Compile once per tool (patterns are validated at registration and tool records
+        // are immutable) — the output path only ever matches the cached regex.
+        let question = {
+            let mut cache = self.prompt_patterns.lock().expect("poisoned");
+            let re = match cache.entry(tool.id) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let Ok(re) = regex::Regex::new(&pattern) else {
+                        return Ok(()); // validated at registration; never fail the output path
+                    };
+                    v.insert(re)
+                }
+            };
+            re.captures(text).map(|caps| {
+                caps.get(1)
+                    .or_else(|| caps.get(0))
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default()
+            })
         };
-        if let Some(caps) = re.captures(text) {
-            let question = caps
-                .get(1)
-                .or_else(|| caps.get(0))
-                .map(|m| m.as_str().trim().to_string())
-                .unwrap_or_default();
+        if let Some(question) = question {
             self.mark_waiting_for_input(id, &question)?;
         }
         Ok(())

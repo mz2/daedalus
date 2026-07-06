@@ -12,10 +12,12 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use daedalus_backend::{AcquireRequest, AgentHandle, Backend, BackendError, UsageSample};
+use daedalus_backend::{
+    require_worktree, AcquireRequest, AgentHandle, Backend, BackendError, UsageSample,
+};
 use daedalus_proto::{
-    Availability, BackendId, BackendKind, EnvLifecycle, EnvironmentId, InvocationSpec, MetricKind,
-    Origin, SandboxEnvironment,
+    Availability, BackendId, BackendKind, EnvironmentId, InvocationSpec, MetricKind,
+    SandboxEnvironment,
 };
 
 /// The Workshop control interface Daedalus drives. Defaulted to a CLI named by
@@ -112,20 +114,10 @@ impl Backend for WorkshopBackend {
                 "no reachable Workshop control interface (set DAEDALUS_WORKSHOP_CMD)".into(),
             ));
         }
-        if req.origin == Origin::PreExisting && req.worktree.is_none() {
-            return Err(BackendError::WorktreeUnavailable(
-                "pre-existing environment requires a worktree reference".into(),
-            ));
-        }
+        require_worktree(&req)?;
 
         // A real implementation calls `workshop create …` here and parses the env handle.
-        let env = SandboxEnvironment {
-            id: EnvironmentId::new(),
-            backend_id: self.id,
-            origin: req.origin,
-            worktree_ref: req.worktree,
-            lifecycle: EnvLifecycle::Ready,
-        };
+        let env = req.into_ready_environment(self.id);
         self.envs.lock().expect("poisoned").insert(
             env.id,
             EnvState {
@@ -150,7 +142,7 @@ impl Backend for WorkshopBackend {
                 return Err(BackendError::NotFound);
             }
         }
-        let zellij_session = format!("daedalus-{env}");
+        let zellij_session = daedalus_zellij::format_session_name(env);
 
         // Launch the agent inside the Workshop env, under zellij, via the control binary:
         //   <control> exec --env <id> -- zellij --session <name> -- <program> <args...>

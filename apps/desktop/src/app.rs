@@ -3,7 +3,7 @@
 //! the GPUI layer renders; built from `App` queries.
 
 use daedalus_app::{App, AppQuery, AppQueryAsync};
-use daedalus_proto::{Availability, SessionStatus, SourceKind};
+use daedalus_proto::{Availability, BackendStatus, DiscoveredSession, SessionStatus, SourceKind};
 
 use crate::components::availability_text;
 use crate::theme::{Skin, Theme};
@@ -191,11 +191,19 @@ impl HostsIndicator {
     /// from the worst local backend availability (with its stated reason); every
     /// discovered host contributes a row from its source availability.
     pub async fn build(app: &App) -> Self {
+        let backends = app.backends().await;
+        let discovered = app.discovered().await;
+        Self::from_data(&backends, &discovered)
+    }
+
+    /// Shape prefetched backend statuses + discovered sessions into the indicator —
+    /// lets a refresh tick fetch each once and feed every consumer (no double polling).
+    #[must_use]
+    pub fn from_data(backends: &[BackendStatus], discovered: &[DiscoveredSession]) -> Self {
         let mut rows: Vec<HostRow> = Vec::new();
 
         // The local host: worst availability among the registered backends (FR-028 keeps
         // the shell truthful when a local backend degrades), with its stated reason.
-        let backends = app.backends().await;
         let worst = backends
             .iter()
             .max_by_key(|b| severity(b.availability))
@@ -210,7 +218,7 @@ impl HostsIndicator {
 
         // Discovered hosts (unique labels), carrying their source availability + the
         // stated attach reason when unreachable (never silently dropped).
-        for d in app.discovered().await {
+        for d in discovered {
             if rows.iter().any(|h| h.name == d.host_label) {
                 continue;
             }
@@ -370,9 +378,7 @@ mod tests {
         ));
         src.set_sessions(vec![src.make_session("alpha", true)]);
         let (core, backend, _dir) =
-            daedalus_tests::core_with_discovery_and_backend(vec![Box::new(
-                daedalus_tests::SharedTestSource(src.clone()),
-            )]);
+            daedalus_tests::core_with_discovery_and_backend(vec![Box::new(src.clone())]);
         let app = daedalus_app::App::new(core);
 
         // Healthy: one dot per host, no reasons.

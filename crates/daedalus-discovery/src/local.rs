@@ -2,12 +2,10 @@
 
 use async_trait::async_trait;
 
-use daedalus_proto::{
-    Availability, DiscoveredSession, DiscoveredSessionId, SessionIdentity, SourceId, SourceKind,
-};
+use daedalus_proto::{Availability, DiscoveredSession, SessionIdentity, SourceId, SourceKind};
 use daedalus_zellij::list_local_sessions;
 
-use crate::DiscoverySource;
+use crate::{advertised_session, DiscoverySource};
 
 /// Discovers sessions running in local zellij on this host.
 pub struct LocalSource {
@@ -23,31 +21,26 @@ impl Default for LocalSource {
 }
 
 impl LocalSource {
-    /// A local source that recognises Daedalus sessions by the `daedalus-` name prefix.
+    /// A local source that recognises Daedalus sessions by the
+    /// [`daedalus_zellij::SESSION_PREFIX`] name prefix.
     #[must_use]
     pub fn new() -> Self {
         Self {
             id: SourceId::new(),
-            prefix: "daedalus-".to_string(),
+            prefix: daedalus_zellij::SESSION_PREFIX.to_string(),
         }
     }
 
     fn to_discovered(&self, name: &str) -> DiscoveredSession {
         let identity = name.strip_prefix(&self.prefix).unwrap_or(name).to_string();
-        DiscoveredSession {
-            id: DiscoveredSessionId {
-                source: self.id,
-                identity: SessionIdentity::new(identity),
-            },
-            kind: SourceKind::Local,
-            source_availability: Availability::Available,
-            zellij_session: name.to_string(),
-            host_label: "localhost".to_string(),
-            status: None,
-            attachable: true,
-            attach_reason: None,
-            artifacts: None,
-        }
+        advertised_session(
+            self.id,
+            SessionIdentity::new(identity),
+            SourceKind::Local,
+            name.to_string(),
+            "localhost".to_string(),
+            None,
+        )
     }
 }
 

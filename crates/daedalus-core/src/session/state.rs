@@ -112,12 +112,6 @@ pub fn transition(
     Ok(next)
 }
 
-/// Whether `trigger` is legal from `current` without computing the target.
-#[must_use]
-pub fn can_transition(current: SessionStatus, trigger: Trigger) -> bool {
-    transition(current, trigger).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

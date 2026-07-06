@@ -49,22 +49,18 @@ impl Core {
             .or(session.ended_at)
             .or(session.started_at)
             .unwrap_or(session.created_at);
-        Duration::from_millis((now.millis() - entered.millis()).max(0) as u64)
+        now.saturating_duration_since(&entered)
     }
 
-    /// When the session last entered its current status, per the lifecycle event history.
+    /// When the session last entered its current status: the newest lifecycle event
+    /// (a targeted query — never a full event-history scan), if it matches that status.
     fn state_entered_at(&self, session: &Session) -> Option<Timestamp> {
-        let events = self.store.list_events(session.id).ok()?;
-        events
-            .iter()
-            .rev()
-            .find(|e| {
-                matches!(
-                    &e.payload,
-                    EventPayload::Lifecycle { status, .. } if *status == session.status
-                )
-            })
-            .map(|e| e.timestamp)
+        let event = self.store.last_lifecycle_event(session.id).ok()??;
+        matches!(
+            &event.payload,
+            EventPayload::Lifecycle { status, .. } if *status == session.status
+        )
+        .then_some(event.timestamp)
     }
 
     /// The waiting-cost indication (FR-021b): an idle estimate for a live blocked

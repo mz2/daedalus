@@ -29,6 +29,13 @@ impl Timestamp {
     pub fn millis(self) -> i64 {
         self.0
     }
+
+    /// The duration from `earlier` to `self`, clamped to zero when `earlier` is later
+    /// (clock skew never yields a negative wait).
+    #[must_use]
+    pub fn saturating_duration_since(&self, earlier: &Timestamp) -> std::time::Duration {
+        std::time::Duration::from_millis((self.0 - earlier.0).max(0) as u64)
+    }
 }
 
 /// Location of a session's SDD artifacts (spec/plan/tasks) in the workspace.

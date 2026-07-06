@@ -22,33 +22,20 @@ pub const STATUS_FILTERS: [SessionStatus; 8] = [
     SessionStatus::Unknown,
 ];
 
-/// The attention kind a session status maps to, when it is blocked on the operator —
-/// drives the inline [`NeedsTag`](crate::screens::needs::kind_tag) (prototype `needsMeta`).
-#[must_use]
-pub fn attention_kind(status: SessionStatus) -> Option<AttentionKind> {
-    match status {
-        SessionStatus::WaitingForInput => Some(AttentionKind::WaitingForInput),
-        SessionStatus::AwaitingConfirmation => Some(AttentionKind::AwaitingConfirmation),
-        SessionStatus::Stalled => Some(AttentionKind::Stalled),
-        SessionStatus::Failed => Some(AttentionKind::Failed),
-        SessionStatus::Unknown => Some(AttentionKind::Disconnected),
-        _ => None,
+/// The fleet sort rank: blocked-on-you first, in the canonical Needs-you order
+/// ([`AttentionKind::rank`]), then the live states, ended last.
+fn sort_rank(status: SessionStatus) -> u8 {
+    if let Some(kind) = AttentionKind::from_status(status) {
+        return kind.rank();
     }
-}
-
-/// The attention sort rank (prototype `order`): blocked-on-you first, ended last.
-#[must_use]
-pub fn attention_rank(status: SessionStatus) -> u8 {
+    // The non-attention tail: live first, ended last (ranked after every attention kind).
     match status {
-        SessionStatus::WaitingForInput => 0,
-        SessionStatus::AwaitingConfirmation => 1,
-        SessionStatus::Stalled => 2,
-        SessionStatus::Failed => 3,
-        SessionStatus::Unknown => 4,
         SessionStatus::Starting => 5,
         SessionStatus::Running => 6,
         SessionStatus::Completed => 7,
         SessionStatus::Stopped => 8,
+        // Unreachable: every other status maps to an attention kind above.
+        _ => u8::MAX,
     }
 }
 
@@ -94,8 +81,8 @@ impl FleetRow {
 /// The fleet view.
 #[derive(Debug, Clone)]
 pub struct FleetView {
-    /// All session rows, attention-first (prototype default sort: awaiting → confirm →
-    /// stalled → failed → disconnected → starting → running → ended).
+    /// All session rows, attention-first in the canonical Needs-you order (awaiting →
+    /// confirm → stalled → disconnected → failed → starting → running → ended).
     pub rows: Vec<FleetRow>,
 }
 
@@ -128,12 +115,12 @@ impl FleetView {
                 origin: s.origin,
                 status: s.status,
                 badge: StatusBadge::session(s.status, theme),
-                needs_tag: attention_kind(s.status).map(kind_tag),
+                needs_tag: AttentionKind::from_status(s.status).map(kind_tag),
                 tasks_done: s.tasks_done,
                 tasks_total: s.tasks_total,
             })
             .collect();
-        rows.sort_by_key(|r| attention_rank(r.status));
+        rows.sort_by_key(|r| sort_rank(r.status));
         Self { rows }
     }
 

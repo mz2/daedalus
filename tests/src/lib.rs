@@ -14,7 +14,7 @@ use daedalus_backend_fake::FakeBackend;
 use daedalus_core::{BackendRegistry, Core, CoreConfig, Store};
 use daedalus_proto::{
     AgenticTool, ArtifactRef, BackendKind, Capabilities, InvocationSpec, Objective, ObjectiveId,
-    Origin, StartSessionRequest, ToolDef,
+    Origin, PromptConvention, StartSessionRequest, ToolDef,
 };
 use daedalus_zellij::InMemoryTerminal;
 
@@ -67,6 +67,30 @@ impl Fixture {
                 capabilities: Capabilities {
                     accepts_interactive_input: true,
                     prompt_convention: None,
+                },
+            })
+            .expect("register tool")
+    }
+
+    /// Register a tool with explicit capabilities: whether it accepts interactive input
+    /// and how its pending prompts are recognised (FR-001a, FR-015b).
+    pub fn register_tool_with(
+        &self,
+        name: &str,
+        accepts_input: bool,
+        prompt_convention: Option<PromptConvention>,
+    ) -> daedalus_proto::ToolId {
+        self.core
+            .register_tool(ToolDef {
+                name: name.to_string(),
+                invocation: InvocationSpec {
+                    program: "echo".to_string(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                },
+                capabilities: Capabilities {
+                    accepts_interactive_input: accepts_input,
+                    prompt_convention,
                 },
             })
             .expect("register tool")
@@ -189,7 +213,7 @@ impl TestDiscoverySource {
             },
             kind: self.kind,
             source_availability: daedalus_proto::Availability::Available,
-            zellij_session: format!("daedalus-{identity}"),
+            zellij_session: format!("{}{identity}", daedalus_zellij::SESSION_PREFIX),
             host_label: "test-host".to_string(),
             status: None,
             attachable,
@@ -216,26 +240,6 @@ impl daedalus_discovery::DiscoverySource for TestDiscoverySource {
     }
     fn availability(&self) -> daedalus_proto::Availability {
         *self.availability.lock().unwrap()
-    }
-}
-
-/// A discovery source that delegates to a shared [`TestDiscoverySource`], so a test can
-/// keep a handle and mutate availability/sessions between coordinator polls.
-pub struct SharedTestSource(pub Arc<TestDiscoverySource>);
-
-#[async_trait::async_trait]
-impl daedalus_discovery::DiscoverySource for SharedTestSource {
-    fn kind(&self) -> daedalus_proto::SourceKind {
-        self.0.kind()
-    }
-    fn source_id(&self) -> daedalus_proto::SourceId {
-        self.0.source_id()
-    }
-    async fn poll(&self) -> Vec<daedalus_proto::DiscoveredSession> {
-        self.0.poll().await
-    }
-    fn availability(&self) -> daedalus_proto::Availability {
-        self.0.availability()
     }
 }
 

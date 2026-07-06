@@ -5,36 +5,11 @@
 
 use bytes::Bytes;
 use daedalus_core::AgentSignal;
-use daedalus_proto::{
-    AppEvent, Capabilities, InvocationSpec, PromptConvention, SessionId, SessionStatus, ToolDef,
-    ToolId,
-};
+use daedalus_proto::{AppEvent, PromptConvention, SessionId, SessionStatus};
 use daedalus_sdk::WaitingState;
 use daedalus_tests::Fixture;
 
 const PROMPT: &str = "Continue? (y/n)";
-
-fn register(
-    fx: &Fixture,
-    name: &str,
-    accepts: bool,
-    convention: Option<PromptConvention>,
-) -> ToolId {
-    fx.core
-        .register_tool(ToolDef {
-            name: name.to_string(),
-            invocation: InvocationSpec {
-                program: "echo".to_string(),
-                args: vec![],
-                env: vec![],
-            },
-            capabilities: Capabilities {
-                accepts_interactive_input: accepts,
-                prompt_convention: convention,
-            },
-        })
-        .expect("register tool")
-}
 
 /// Stream the seeded output chunks through the capture pipeline, so any declared prompt
 /// pattern is observed the same way the live terminal is.
@@ -51,8 +26,7 @@ async fn stream_output(fx: &Fixture, id: SessionId, chunks: Vec<&'static [u8]>) 
 #[tokio::test]
 async fn prompt_pattern_match_enters_waiting_and_answering_returns_to_running() {
     let fx = Fixture::new();
-    let tool = register(
-        &fx,
+    let tool = fx.register_tool_with(
         "claude",
         true,
         Some(PromptConvention::PromptPattern(
@@ -99,7 +73,7 @@ async fn prompt_pattern_match_enters_waiting_and_answering_returns_to_running() 
 #[tokio::test]
 async fn sdk_signal_surfaces_the_waiting_state_and_question() {
     let fx = Fixture::new();
-    let tool = register(&fx, "speckit", true, Some(PromptConvention::SdkSignal));
+    let tool = fx.register_tool_with("speckit", true, Some(PromptConvention::SdkSignal));
     let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
 
     // The in-Workshop SDK signals a waiting state with the pending question.
@@ -150,8 +124,8 @@ async fn tools_without_a_declaration_never_enter_waiting() {
     let fx = Fixture::new();
     // Interactive but with no declared prompt convention (FR-015b: never enters), and a
     // non-interactive tool (FR-023: cannot enter by definition).
-    let undeclared = register(&fx, "undeclared", true, None);
-    let batch = register(&fx, "batch", false, None);
+    let undeclared = fx.register_tool_with("undeclared", true, None);
+    let batch = fx.register_tool_with("batch", false, None);
 
     for tool in [undeclared, batch] {
         let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
@@ -170,8 +144,7 @@ async fn tools_without_a_declaration_never_enter_waiting() {
 #[tokio::test]
 async fn a_waiting_session_is_not_marked_stalled_past_the_stall_interval() {
     let fx = Fixture::new();
-    let tool = register(
-        &fx,
+    let tool = fx.register_tool_with(
         "claude",
         true,
         Some(PromptConvention::PromptPattern(

@@ -28,18 +28,21 @@ use daedalus_backend::BackendError;
 use daedalus_discovery::DiscoveryCoordinator;
 use daedalus_proto::{
     AppEvent, BackendKind, DiscoveredSession, DiscoveredSessionId, EnvironmentId, EventKind,
-    EventPayload, EventRecord, RedactedBytes, ResourceUsageMetric, SessionDetail, SessionId,
-    SessionStatus, TrackedTask,
+    EventPayload, EventRecord, Origin, RedactedBytes, ResourceUsageMetric, Session, SessionDetail,
+    SessionId, SessionStatus, ToolId, TrackedTask,
 };
 use daedalus_zellij::{TerminalAttach, TerminalChannel};
 
 pub use backends::BackendRegistry;
 pub use persist::{Store, StoreError};
 pub use session::outcome::AgentSignal;
-pub use session::state::{can_transition, transition, Trigger};
+pub use session::state::{transition, Trigger};
 
 /// Default stall interval (FR-020, data-model: 120s).
 pub const DEFAULT_STALL_INTERVAL_SECS: u64 = 120;
+
+/// How many (non-output) events the session timeline shows at most (the newest ones).
+pub const TIMELINE_EVENT_LIMIT: usize = 200;
 
 /// Errors the orchestration core can return, each with a stated reason (C-A1/C-A2).
 #[derive(Debug, Error)]
@@ -85,6 +88,12 @@ pub enum CoreError {
     Backend(#[from] BackendError),
 }
 
+impl From<session::state::TransitionError> for CoreError {
+    fn from(e: session::state::TransitionError) -> Self {
+        CoreError::IllegalTransition(e.to_string())
+    }
+}
+
 /// What happens when a session's environment exceeds one of its resource limits (spec
 /// edge case "Resource exhaustion"): the breach is always surfaced to the operator; the
 /// policy governs whether the session is also stopped.
@@ -122,7 +131,6 @@ impl Default for CoreConfig {
 pub(crate) struct RuntimeHandle {
     pub(crate) backend_id: daedalus_proto::BackendId,
     pub(crate) environment_id: EnvironmentId,
-    #[allow(dead_code)]
     pub(crate) zellij_session: String,
     /// Resource limits the environment was acquired with, enforced against observed
     /// usage per the configured [`LimitPolicy`].
@@ -139,6 +147,9 @@ pub struct Core {
     pub(crate) events: broadcast::Sender<AppEvent>,
     pub(crate) runtime: Mutex<HashMap<SessionId, RuntimeHandle>>,
     pub(crate) delivered_input: Mutex<HashMap<SessionId, Vec<Bytes>>>,
+    /// Compiled prompt-pattern regexes per tool (validated at registration), so the
+    /// output path never recompiles per chunk (FR-015b).
+    pub(crate) prompt_patterns: Mutex<HashMap<ToolId, regex::Regex>>,
 }
 
 impl Core {
@@ -169,6 +180,7 @@ impl Core {
             events,
             runtime: Mutex::new(HashMap::new()),
             delivered_input: Mutex::new(HashMap::new()),
+            prompt_patterns: Mutex::new(HashMap::new()),
         }
     }
 
@@ -309,10 +321,13 @@ impl Core {
         Ok(self.store.metric_history(id, metric, limit)?)
     }
 
-    /// The session's persisted event records, oldest first — the lifecycle/operator-action
-    /// timeline (FR-018, FR-019a).
+    /// The session's persisted timeline events, oldest first — the lifecycle /
+    /// operator-action / task-change timeline (FR-018, FR-019a). Output chunks are
+    /// excluded (the terminal renders them from the capture) and only the newest
+    /// [`TIMELINE_EVENT_LIMIT`] entries are returned; [`Store::list_events`] remains the
+    /// unfiltered path.
     pub fn session_events(&self, id: SessionId) -> Result<Vec<EventRecord>, CoreError> {
-        Ok(self.store.list_events(id)?)
+        Ok(self.store.timeline_events(id, TIMELINE_EVENT_LIMIT)?)
     }
 
     /// The tail of a session's redacted captured output, for display (FR-016).
@@ -432,19 +447,10 @@ impl Core {
             return Ok(());
         }
 
-        // Stop policy: halt the agent, then record the stop with its stated reason
-        // (record_lifecycle emits the status change + operator notification).
-        if let Some((backend_id, env, _)) = self.runtime_lookup(id) {
-            if let Some(backend) = self.backends.by_id(backend_id) {
-                let _ = backend.stop(&env).await;
-            }
-        }
-        let next = transition(session.status, Trigger::OperatorStopped)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
-        self.store
-            .set_session_status(id, next, Some(clock::now()), Some(&reason))?;
-        self.record_lifecycle(id, next, Some(reason));
-        Ok(())
+        // Stop policy: halt the agent, then record the stop with its stated reason —
+        // the shared stop tail (record_lifecycle emits the status change + operator
+        // notification). Not an operator action, so none is recorded on the timeline.
+        self.stop_with_reason(id, &reason, false).await
     }
 
     /// Attach to a session's live terminal, redact + persist the captured stream, and
@@ -504,6 +510,57 @@ fn exceeded_limit(
     match limit {
         Some(limit) if sample.value > limit => Some(name),
         _ => None,
+    }
+}
+
+/// The joined per-session display context shared by the fleet and aggregate-tasks
+/// queries: tool name (with the unknown-tool fallback), objective description, both SDD
+/// artifact refs, and the hosting environment's backend kind + origin.
+pub(crate) struct SessionContext {
+    pub(crate) tool_name: String,
+    pub(crate) objective: String,
+    /// The objective's artifact root (the aggregate board's spec ref).
+    pub(crate) artifact_root: String,
+    /// The objective's tracked `tasks.md` (the fleet row's spec ref).
+    pub(crate) tasks_file: String,
+    pub(crate) backend: BackendKind,
+    pub(crate) origin: Origin,
+}
+
+impl Core {
+    /// Resolve a session's display context (never fails: missing joins fall back to
+    /// placeholders so one broken record never hides the row).
+    pub(crate) fn session_context(&self, session: &Session) -> SessionContext {
+        let tool_name = self
+            .store
+            .get_tool(session.tool_id)
+            .map(|t| t.name)
+            .unwrap_or_else(|_| "(unknown tool)".to_string());
+        let (objective, artifact_root, tasks_file) = self
+            .store
+            .get_objective(session.objective_id)
+            .map(|o| {
+                (
+                    o.description,
+                    o.artifact_ref.root,
+                    o.artifact_ref.tasks_file,
+                )
+            })
+            .unwrap_or_default();
+        let env = self.store.get_environment(session.environment_id).ok();
+        let origin = env.as_ref().map(|e| e.origin).unwrap_or(Origin::Fresh);
+        let backend = env
+            .and_then(|e| self.backends.by_id(e.backend_id))
+            .map(|b| b.kind())
+            .unwrap_or(BackendKind::Fake);
+        SessionContext {
+            tool_name,
+            objective,
+            artifact_root,
+            tasks_file,
+            backend,
+            origin,
+        }
     }
 }
 

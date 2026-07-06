@@ -10,16 +10,44 @@ pub mod mdns;
 pub mod tunnel;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use daedalus_proto::{Availability, DiscoveredSession, SourceId, SourceKind};
+use daedalus_proto::{
+    ArtifactRef, Availability, DiscoveredSession, DiscoveredSessionId, SessionIdentity, SourceId,
+    SourceKind,
+};
 
 pub use dedupe::deduplicate;
 pub use local::LocalSource;
 pub use mdns::MdnsSource;
 pub use tunnel::{AdvertisementFetcher, TunnelSource, TunnelTarget};
+
+/// A freshly-advertised, attachable [`DiscoveredSession`] as every source constructs it.
+/// The `source_availability` set here is a placeholder: the [`DiscoveryCoordinator`] is
+/// the single writer and overwrites it on every poll (FR-014).
+#[must_use]
+pub fn advertised_session(
+    source: SourceId,
+    identity: SessionIdentity,
+    kind: SourceKind,
+    zellij_session: String,
+    host_label: String,
+    artifacts: Option<ArtifactRef>,
+) -> DiscoveredSession {
+    DiscoveredSession {
+        id: DiscoveredSessionId { source, identity },
+        kind,
+        source_availability: Availability::Available,
+        zellij_session,
+        host_label,
+        status: None,
+        attachable: true,
+        attach_reason: None,
+        artifacts,
+    }
+}
 
 /// A single source of discovered sessions (contract `discovery-and-sdk.md`).
 #[async_trait]
@@ -35,6 +63,24 @@ pub trait DiscoverySource: Send + Sync {
 
     /// Unreachable when the host stops advertising / the tunnel drops (FR-014).
     fn availability(&self) -> Availability;
+}
+
+// A shared handle is a source too, so a caller can keep the `Arc` and drive the source
+// (e.g. flip availability in tests) between coordinator polls.
+#[async_trait]
+impl<T: DiscoverySource + ?Sized> DiscoverySource for Arc<T> {
+    fn kind(&self) -> SourceKind {
+        self.as_ref().kind()
+    }
+    fn source_id(&self) -> SourceId {
+        self.as_ref().source_id()
+    }
+    async fn poll(&self) -> Vec<DiscoveredSession> {
+        self.as_ref().poll().await
+    }
+    fn availability(&self) -> Availability {
+        self.as_ref().availability()
+    }
 }
 
 /// Coordinates polling across sources, retaining last-seen sessions so that when a source

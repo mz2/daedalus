@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use daedalus_proto::{
-    Availability, BackendId, BackendKind, EnvironmentId, InvocationSpec, MetricKind, Origin,
-    ResourceLimits, SandboxEnvironment, WorktreeRef,
+    Availability, BackendId, BackendKind, EnvLifecycle, EnvironmentId, InvocationSpec, MetricKind,
+    Origin, ResourceLimits, SandboxEnvironment, WorktreeRef,
 };
 
 /// What the operator asked for when acquiring an environment.
@@ -24,6 +24,33 @@ pub struct AcquireRequest {
     pub worktree: Option<WorktreeRef>,
     /// Resource policy to apply.
     pub limits: ResourceLimits,
+}
+
+impl AcquireRequest {
+    /// A freshly-provisioned, ready [`SandboxEnvironment`] honouring this request's
+    /// origin/worktree — the shape every backend returns from a successful `acquire`.
+    #[must_use]
+    pub fn into_ready_environment(self, backend: BackendId) -> SandboxEnvironment {
+        SandboxEnvironment {
+            id: EnvironmentId::new(),
+            backend_id: backend,
+            origin: self.origin,
+            worktree_ref: self.worktree,
+            lifecycle: EnvLifecycle::Ready,
+        }
+    }
+}
+
+/// Reject a [`Origin::PreExisting`] acquire that carries no worktree reference — an
+/// isolated worktree is required and its absence leaves no environment behind
+/// (FR-002a, contract C-B1).
+pub fn require_worktree(req: &AcquireRequest) -> Result<(), BackendError> {
+    if req.origin == Origin::PreExisting && req.worktree.is_none() {
+        return Err(BackendError::WorktreeUnavailable(
+            "pre-existing environment requires a worktree reference".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// A handle to a launched agent, including the zellij session it runs under.

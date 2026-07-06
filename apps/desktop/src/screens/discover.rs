@@ -223,7 +223,7 @@ mod tests {
     use super::*;
     use daedalus_app::App;
     use daedalus_proto::{Availability, SessionStatus, SourceKind};
-    use daedalus_tests::{core_with_discovery, SharedTestSource, TestDiscoverySource};
+    use daedalus_tests::{core_with_discovery, TestDiscoverySource};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -305,7 +305,7 @@ mod tests {
         // kept-listed note, and Connect is disabled with a reason.
         let tunnel = Arc::new(TestDiscoverySource::new(SourceKind::TunneledWorkshop));
         tunnel.set_sessions(vec![tunnel.make_session("t-1", true)]);
-        let (core, _dir) = core_with_discovery(vec![Box::new(SharedTestSource(tunnel.clone()))]);
+        let (core, _dir) = core_with_discovery(vec![Box::new(tunnel.clone())]);
         let app = App::new(core);
 
         // Healthy first poll (the coordinator retains last-seen sessions).

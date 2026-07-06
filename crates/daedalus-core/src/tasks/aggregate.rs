@@ -3,7 +3,7 @@
 //! the session is blocked on the operator. This backs the application's landing view — the
 //! task is the unit; the session becomes a field (design `tasks.jsx` / `data.js allTasks()`).
 
-use daedalus_proto::{AggregateTask, AttentionKind, BackendKind, TaskStatus};
+use daedalus_proto::{AggregateTask, AttentionKind, TaskStatus};
 
 use crate::{Core, CoreError};
 
@@ -25,33 +25,18 @@ impl Core {
     pub fn all_tasks(&self) -> Result<Vec<AggregateTask>, CoreError> {
         let mut rows = Vec::new();
         for session in self.store.list_sessions()? {
-            let tool = self
-                .store
-                .get_tool(session.tool_id)
-                .map(|t| t.name)
-                .unwrap_or_else(|_| "(unknown tool)".to_string());
-            let (objective, spec) = self
-                .store
-                .get_objective(session.objective_id)
-                .map(|o| (o.description, o.artifact_ref.root))
-                .unwrap_or_default();
-            let backend = self
-                .store
-                .get_environment(session.environment_id)
-                .ok()
-                .and_then(|e| self.backends.by_id(e.backend_id))
-                .map(|b| b.kind())
-                .unwrap_or(BackendKind::Fake);
+            let ctx = self.session_context(&session);
             let attention = AttentionKind::from_status(session.status);
             for task in self.store.list_tasks(session.id)? {
                 rows.push(AggregateTask {
                     session: task.session_id,
                     task,
-                    objective: objective.clone(),
+                    objective: ctx.objective.clone(),
                     session_status: session.status,
-                    spec: spec.clone(),
-                    tool: tool.clone(),
-                    backend,
+                    // The aggregate board's spec ref is the objective's artifact root.
+                    spec: ctx.artifact_root.clone(),
+                    tool: ctx.tool_name.clone(),
+                    backend: ctx.backend,
                     attention,
                 });
             }

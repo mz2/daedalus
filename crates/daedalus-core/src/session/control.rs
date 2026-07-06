@@ -12,6 +12,18 @@ impl Core {
     /// Stop a running session: halt the agent, release nothing yet (clean-up does that),
     /// and record it as stopped-by-operator (FR-022). Idempotent.
     pub async fn stop_session(&self, id: SessionId) -> Result<(), CoreError> {
+        self.stop_with_reason(id, "stopped by operator", true).await
+    }
+
+    /// The shared stop tail (FR-022, and the resource-limit stop policy): halt the agent,
+    /// record the session as stopped with the stated reason, and — for an operator's stop
+    /// — record the operator action on the timeline. Idempotent.
+    pub(crate) async fn stop_with_reason(
+        &self,
+        id: SessionId,
+        reason: &str,
+        operator_action: bool,
+    ) -> Result<(), CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
         if session.status.is_terminal() {
             return Ok(()); // idempotent — already stopped/completed/failed
@@ -23,12 +35,13 @@ impl Core {
             }
         }
 
-        let next = transition(session.status, Trigger::OperatorStopped)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        let next = transition(session.status, Trigger::OperatorStopped)?;
         self.store
-            .set_session_status(id, next, Some(clock::now()), Some("stopped by operator"))?;
-        self.record_operator_action(id, OperatorAction::Stop);
-        self.record_lifecycle(id, next, Some("stopped by operator".into()));
+            .set_session_status(id, next, Some(clock::now()), Some(reason))?;
+        if operator_action {
+            self.record_operator_action(id, OperatorAction::Stop);
+        }
+        self.record_lifecycle(id, next, Some(reason.to_string()));
         Ok(())
     }
 
@@ -87,8 +100,7 @@ impl Core {
     /// (`AwaitingConfirmation → Completed`, FR-015a).
     pub async fn confirm_completion(&self, id: SessionId) -> Result<(), CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
-        let next = transition(session.status, Trigger::OperatorConfirmed)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        let next = transition(session.status, Trigger::OperatorConfirmed)?;
         self.store
             .set_session_status(id, next, Some(clock::now()), None)?;
         self.record_operator_action(id, OperatorAction::ConfirmCompletion);

@@ -51,6 +51,14 @@ impl SessionStatus {
         )
     }
 
+    /// True once the agent run is over: every terminal state plus
+    /// [`AwaitingConfirmation`](SessionStatus::AwaitingConfirmation) — the agent exited;
+    /// at most the operator's call is pending (FR-015a).
+    #[must_use]
+    pub fn has_ended(self) -> bool {
+        self.is_terminal() || self == SessionStatus::AwaitingConfirmation
+    }
+
     /// True for states that ask the operator for attention but can still progress.
     #[must_use]
     pub fn is_attention(self) -> bool {

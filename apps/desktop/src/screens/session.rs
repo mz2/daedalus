@@ -5,8 +5,8 @@
 
 use daedalus_app::{App, AppQuery};
 use daedalus_proto::{
-    EventPayload, EventRecord, MetricKind, OperatorAction, ResourceUsageMetric, SessionDetail,
-    SessionId, SessionStatus, TaskStatus, Timestamp,
+    AttentionKind, EventPayload, EventRecord, MetricKind, OperatorAction, ResourceUsageMetric,
+    SessionDetail, SessionId, SessionStatus, TaskStatus, Timestamp,
 };
 
 use crate::components::{ActionButton, ButtonIntent, Chip, Meter, StatusBadge};
@@ -45,6 +45,20 @@ pub enum SessionFocus {
     AnswerPrompt,
     /// Focus the confirm-completion controls (confirm-kind items).
     ConfirmControls,
+}
+
+impl SessionFocus {
+    /// The deep-link focus an attention kind lands with, when the item is answerable:
+    /// a question focuses the prompt, a confirm focuses the confirm controls; the
+    /// other kinds have no answer mode to land in.
+    #[must_use]
+    pub fn for_kind(kind: AttentionKind) -> Option<Self> {
+        match kind {
+            AttentionKind::WaitingForInput => Some(Self::AnswerPrompt),
+            AttentionKind::AwaitingConfirmation => Some(Self::ConfirmControls),
+            AttentionKind::Stalled | AttentionKind::Disconnected | AttentionKind::Failed => None,
+        }
+    }
 }
 
 /// A navigation intent to the session detail — what activating a Needs-you row or a
@@ -389,8 +403,7 @@ impl SessionView {
 
         let rail = Self::rail(&detail, events, cpu_history, memory_history);
         let banner = Self::banner(&detail, events, backend_label);
-        let ended = detail.session.status.is_terminal()
-            || detail.session.status == SessionStatus::AwaitingConfirmation;
+        let ended = detail.session.status.has_ended();
         let input_notice = if ended {
             Some(REVIEW_MODE_NOTICE.to_string())
         } else if !detail.session.accepts_input {
@@ -433,9 +446,7 @@ impl SessionView {
         let tool = &detail.tool.name;
         let outcome = session.terminal_outcome.clone().unwrap_or_default();
         let now = daedalus_core::clock::now();
-        let since = |t: Timestamp| {
-            std::time::Duration::from_millis((now.millis() - t.millis()).max(0) as u64)
-        };
+        let since = |t: Timestamp| now.saturating_duration_since(&t);
         let waiting = session.waiting_since.map(since);
         let btn = |label: &str, intent| ActionButton::enabled(label, intent);
 
@@ -571,9 +582,7 @@ impl SessionView {
     ) -> TelemetryRail {
         let status = detail.session.status;
         let unknown = status == SessionStatus::Unknown;
-        // The run is over for every terminal state plus awaiting-confirmation (the agent
-        // exited; only the operator's call is pending) — prototype `ended`.
-        let ended = status.is_terminal() || status == SessionStatus::AwaitingConfirmation;
+        let ended = status.has_ended(); // prototype `ended`
 
         let latest = |kind: MetricKind| {
             detail
@@ -596,8 +605,7 @@ impl SessionView {
             } else {
                 daedalus_core::clock::now()
             };
-            let elapsed =
-                std::time::Duration::from_millis((until.millis() - started.millis()).max(0) as u64);
+            let elapsed = until.saturating_duration_since(&started);
             RailResources {
                 cpu: ResourceSpark {
                     label: "CPU",
@@ -710,9 +718,7 @@ impl SessionView {
     fn controls(detail: &SessionDetail, _theme: &Theme) -> Vec<ActionButton> {
         let mut controls = Vec::new();
         let status = detail.session.status;
-        // The run is over for terminal states plus awaiting-confirmation (prototype
-        // `ended` — the agent exited; only the operator's call is pending).
-        let ended = status.is_terminal() || status == SessionStatus::AwaitingConfirmation;
+        let ended = status.has_ended(); // prototype `ended`
         let live = matches!(status, SessionStatus::Starting | SessionStatus::Running);
 
         // Send-input gated on the tool capability (FR-023) and on the run being over —
@@ -761,16 +767,6 @@ impl SessionView {
         }
 
         controls
-    }
-
-    /// Whether all tasks are done (drives the completed affordance).
-    #[must_use]
-    pub fn all_tasks_done(&self) -> bool {
-        !self.board.is_empty()
-            && self
-                .board
-                .iter()
-                .all(|r| r.badge.tone == crate::theme::StatusTone::from_task(TaskStatus::Done))
     }
 }
 

@@ -10,6 +10,7 @@ description = "In-memory fake backend that drives Daedalus contract/integration 
 [dependencies]
 daedalus-proto = { workspace = true }
 daedalus-backend = { workspace = true }
+daedalus-zellij = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]

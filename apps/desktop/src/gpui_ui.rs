@@ -13,13 +13,13 @@ use gpui::{
 use gpui_component::input::{Input, InputState};
 use gpui_component::sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem};
 use gpui_component::{button::Button, button::ButtonVariants};
-use gpui_component::{h_flex, v_flex, IconName, Root, StyledExt, TitleBar};
+use gpui_component::{h_flex, v_flex, Disableable, IconName, Root, StyledExt, TitleBar};
 use gpui_platform::application;
 use gpui_terminal::{ColorPalette, TerminalConfig, TerminalView};
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use tokio::runtime::Handle;
 
-use daedalus_app::{App, AppQuery, Command};
+use daedalus_app::{App, AppQuery, AppQueryAsync, Command};
 use daedalus_proto::{
     ArtifactRef, Availability, BackendKind, Capabilities, DiscoveredSession, InvocationSpec,
     Objective, ObjectiveId, Origin, SessionId, SessionStatus, StartSessionRequest, TaskStatus,
@@ -27,10 +27,10 @@ use daedalus_proto::{
 };
 
 use crate::app::{HostsIndicator, NavItem, StatusCounts};
-use crate::components::availability_text;
+use crate::components::{availability_text, ActionButton, ButtonIntent, StatusBadge};
 use crate::screens::backends::BackendsView;
 use crate::screens::needs::NeedsView;
-use crate::screens::session::{SessionFocus, SessionView, TimelineKind};
+use crate::screens::session::{BannerTone, SessionFocus, SessionView, TimelineKind};
 use crate::screens::settings::SettingsView;
 use crate::screens::tasks::{TaskFilters, TasksBoardView};
 use crate::theme::{Color, OsAppearance, StatusTone, Theme as Palette, ThemePreference};
@@ -99,17 +99,10 @@ pub fn run(app: App, handle: Handle) {
             .with_assets(gpui_component_assets::Assets)
             .run(move |cx: &mut GpuiApp| {
                 gpui_component::init(cx);
-                // Dark by default (the locked design), with the platform accent tinted in.
+                // Dark by default (the locked design); `AppRoot::new` → `apply_theme`
+                // resolves the preference and tints the platform accent in before the
+                // first frame.
                 gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
-                let accent: gpui::Hsla = col(crate::theme::Skin::from_host_os().accent()).into();
-                let on_accent: gpui::Hsla = gpui::rgb(0xffffff).into();
-                {
-                    let theme = gpui_component::Theme::global_mut(cx);
-                    theme.primary = accent;
-                    theme.primary_foreground = on_accent;
-                    theme.sidebar_primary = accent;
-                    theme.sidebar_primary_foreground = on_accent;
-                }
 
                 let bounds = Bounds::centered(None, gpui::size(px(1240.0), px(820.0)), cx);
                 let options = WindowOptions {
@@ -229,7 +222,7 @@ pub fn run(app: App, handle: Handle) {
 }
 
 /// Register the demo tool (idempotent) so the tool picker is never empty.
-fn ensure_tool(app: &App) -> ToolId {
+fn ensure_tool(app: &App) {
     let def = ToolDef {
         name: "claude".to_string(),
         invocation: InvocationSpec {
@@ -242,17 +235,8 @@ fn ensure_tool(app: &App) -> ToolId {
             prompt_convention: None,
         },
     };
-    match app.core().register_tool(def) {
-        Ok(id) => id,
-        Err(_) => app
-            .core()
-            .list_tools()
-            .unwrap_or_default()
-            .into_iter()
-            .find(|t| t.name == "claude")
-            .map(|t| t.id)
-            .unwrap_or_default(),
-    }
+    // An Err means the tool already exists from a previous launch — fine either way.
+    let _ = app.core().register_tool(def);
 }
 
 struct AppRoot {
@@ -275,6 +259,11 @@ struct AppRoot {
     // Shell hosts indicator + backends screen data (refreshed on the same timer; FR-028).
     hosts: HostsIndicator,
     backends_view: BackendsView,
+    // Cached per refresh tick (and on push events), NOT per frame: the ~30fps terminal
+    // pump repaints the whole window, so the titlebar counts and Needs-you queue must
+    // not re-scan the fleet on every paint.
+    counts: StatusCounts,
+    needs: NeedsView,
     // The embedded terminal for the open session (a real PTY via a shell); the PTY handles
     // are held so the pty/child stay alive while the terminal is shown.
     terminal: Option<Entity<TerminalView>>,
@@ -294,30 +283,71 @@ impl AppRoot {
         cx: &mut Context<Self>,
     ) -> Self {
         // Refresh live state ~2×/sec: re-poll discovery + host/backend availability on
-        // the tokio runtime, then notify.
+        // the tokio runtime, then notify. Discovery and backend statuses are fetched
+        // ONCE per tick (concurrently) and fed to every consumer — the previous shape
+        // re-fetched both inside `HostsIndicator::build`/`BackendsView::build`.
         let app_bg = app.clone();
         let handle_bg = handle.clone();
         cx.spawn(async move |this, cx| loop {
             let a = app_bg.clone();
             let snapshot = handle_bg
                 .spawn(async move {
-                    let discovered = a.core().discovered().await;
-                    let hosts = HostsIndicator::build(&a).await;
-                    let backends = BackendsView::build(&a, &Palette::host_default()).await;
-                    (discovered, hosts, backends)
+                    let (discovered, backend_statuses) = tokio::join!(a.discovered(), a.backends());
+                    // Keep task boards live for sessions whose run is still on — moved
+                    // off the render path (re-parsing tasks.md per frame was wasted).
+                    for s in a.fleet() {
+                        if !s.status.has_ended() {
+                            let _ = a.core().refresh_task_board(s.id);
+                        }
+                    }
+                    let hosts = HostsIndicator::from_data(&backend_statuses, &discovered);
+                    let backends = BackendsView::from_data(
+                        backend_statuses,
+                        a.core().environments().unwrap_or_default(),
+                        &Palette::host_default(),
+                    );
+                    let counts = StatusCounts::from_app(&a);
+                    let needs = NeedsView::build(&a);
+                    (discovered, hosts, backends, counts, needs)
                 })
                 .await;
-            if let Ok((discovered, hosts, backends)) = snapshot {
+            if let Ok((discovered, hosts, backends, counts, needs)) = snapshot {
                 let _ = this.update(cx, |this, cx| {
                     this.discovered = discovered;
                     this.hosts = hosts;
                     this.backends_view = backends;
+                    this.counts = counts;
+                    this.needs = needs;
                     cx.notify();
                 });
             }
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(500))
                 .await;
+        })
+        .detach();
+
+        // Push events refresh the cached shell state immediately, so operator actions
+        // (Confirm/Stop/…) reflect in the titlebar counts and Needs-you queue without
+        // waiting for the next tick. Output chunks are skipped — they stream constantly
+        // and the terminal pump already repaints for them.
+        let mut events = app.subscribe();
+        cx.spawn(async move |this, cx| loop {
+            match events.recv().await {
+                Ok(daedalus_app::AppEvent::Output { .. }) => continue,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+            if this
+                .update(cx, |this, cx| {
+                    this.counts = StatusCounts::from_app(&this.app);
+                    this.needs = NeedsView::build(&this.app);
+                    cx.notify();
+                })
+                .is_err()
+            {
+                break;
+            }
         })
         .detach();
 
@@ -344,6 +374,8 @@ impl AppRoot {
         })
         .detach();
 
+        let counts = StatusCounts::from_app(&app);
+        let needs = NeedsView::build(&app);
         let mut root = Self {
             app,
             handle,
@@ -364,6 +396,8 @@ impl AppRoot {
                 reassurance: None,
                 environments: Vec::new(),
             },
+            counts,
+            needs,
             terminal: None,
             pty: None,
             child: None,
@@ -483,7 +517,8 @@ impl Render for AppRoot {
 
 impl AppRoot {
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let counts = StatusCounts::from_app(&self.app);
+        // Cached per refresh tick / push event — never recomputed per frame.
+        let counts = self.counts;
         let p = self.palette;
         TitleBar::new()
             .child(
@@ -547,8 +582,8 @@ impl AppRoot {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // "Needs you" leads and carries the queue count as its badge (purple in the
-        // design; the count travels in the label here).
-        let needs = self.app.needs_you().len();
+        // design; the count travels in the label here). Read from the per-tick cache.
+        let needs = self.needs.rows.len();
         let needs_label = if needs > 0 {
             format!("Needs you ({needs})")
         } else {
@@ -641,7 +676,6 @@ impl AppRoot {
     }
 
     fn render_start(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.palette;
         let tools = self.app.core().list_tools().unwrap_or_default();
         let selected_tool = self.start_tool.or_else(|| tools.first().map(|t| t.id));
 
@@ -723,7 +757,6 @@ impl AppRoot {
                 ),
         );
 
-        let _ = p;
         screen(
             "Start a session",
             "Select a tool + objective, choose an environment, launch",
@@ -780,10 +813,11 @@ impl AppRoot {
     }
 
     /// The Needs-you queue (US6): the dedicated screen, driven by the headless
-    /// [`NeedsView`] view-model so copy stays identical to the tested design strings.
+    /// [`NeedsView`] view-model so copy stays identical to the tested design strings —
+    /// read from the per-tick cache rather than rebuilt per frame.
     fn render_needs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        let view = NeedsView::build(&self.app);
+        let view = &self.needs;
         let mut list = v_flex().gap_2().w_full();
         if let Some(caught_up) = view.empty {
             list = list.child(
@@ -888,7 +922,9 @@ impl AppRoot {
                         })),
                 );
             }
-            if !s.status.is_terminal() {
+            // Stop only while the run is on (matches the tested SessionView control
+            // rule: an awaiting-confirmation run has already exited).
+            if !s.status.has_ended() {
                 row = row.child(
                     Button::new(SharedString::from(format!("stop-{id}")))
                         .danger()
@@ -924,11 +960,15 @@ impl AppRoot {
 
     fn render_detail(&self, id: SessionId, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        let Some(detail) = self.app.session(id) else {
+        // The whole screen renders from the tested headless [`SessionView`] — banner
+        // copy, control gating (disabled-with-reason), board rows, rail — so the native
+        // surface can't drift from the design strings. A pending deep-link focus lands
+        // as answer mode via `with_focus` (T078).
+        let Some(vm) = SessionView::build(&self.app, id, &self.palette)
+            .map(|vm| vm.with_focus(self.session_focus))
+        else {
             return screen("Session", "not found");
         };
-        let s = &detail.session;
-        let tone = StatusTone::from_session(s.status);
 
         let header = h_flex()
             .items_center()
@@ -943,76 +983,49 @@ impl AppRoot {
                         cx.notify();
                     })),
             )
-            .child(status_pill(p, tone))
-            .child(div().font_semibold().child(detail.tool.name.clone()))
-            .child(
-                div()
-                    .text_sm()
-                    .opacity(0.6)
-                    .child(detail.objective.description.clone()),
-            );
+            .child(badge_pill(&vm.badge))
+            .child(div().font_semibold().child(vm.tool.clone()))
+            .child(div().text_sm().opacity(0.6).child(vm.objective.clone()));
 
-        let mut controls = h_flex().gap_2();
-        if s.status == SessionStatus::AwaitingConfirmation {
-            controls = controls.child(
-                Button::new("d-confirm")
-                    .primary()
-                    .label("Confirm")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.dispatch(Command::ConfirmCompletion(id));
-                        cx.notify();
-                    })),
-            );
+        // The per-status state banner (prototype `StateBanner`), copy verbatim from the
+        // view-model; its actions are carried by the header controls below.
+        let banner = vm.banner.as_ref().map(|b| {
+            let mut tint = col(banner_color(p, b.tone));
+            tint.a = 0.15;
+            let mut el = v_flex()
+                .gap_1()
+                .p_2()
+                .rounded_md()
+                .bg(tint)
+                .child(div().font_semibold().text_sm().child(b.lead.clone()));
+            if let Some(body) = &b.body {
+                el = el.child(div().text_sm().opacity(0.8).child(body.clone()));
+            }
+            if let Some(quote) = &b.quote {
+                el = el.child(div().text_sm().opacity(0.8).child(format!("“{quote}”")));
+            }
+            if let Some(meta) = &b.meta {
+                el = el.child(div().text_xs().opacity(0.6).child(meta.clone()));
+            }
+            el
+        });
+
+        // Header lifecycle controls in prototype order, from the view-model: Send input
+        // and Clean up gated with a stated reason, Stop only while the run is on,
+        // Confirm completion / Start similar per state.
+        let mut controls = h_flex().gap_2().items_center();
+        for c in &vm.controls {
+            controls = controls.child(self.control_button(id, c, cx));
         }
-        if !s.status.is_terminal() {
-            controls = controls.child(Button::new("d-stop").danger().label("Stop").on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.dispatch(Command::StopSession(id));
-                    cx.notify();
-                }),
-            ));
-        }
-        controls = controls.child(Button::new("d-clean").ghost().label("Clean up").on_click(
-            cx.listener(move |this, _, _, cx| {
-                this.dispatch(Command::CleanUp(id));
-                this.close_terminal();
-                this.view = View::Nav(NavItem::Fleet);
-                cx.notify();
-            }),
-        ));
 
-        // Answer mode (T078): opened via a Needs-you/notification deep link while the
-        // agent is waiting — surface the pending question next to the focused input.
-        let answer_banner = (self.session_focus == Some(SessionFocus::AnswerPrompt)
-            && s.status == SessionStatus::WaitingForInput)
-            .then(|| {
-                let prompt = s
-                    .pending_prompt
-                    .clone()
-                    .unwrap_or_else(|| "asked a question".to_string());
-                let mut tint = col(StatusTone::Awaiting.color(p.skin));
-                tint.a = 0.15;
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .p_2()
-                    .rounded_md()
-                    .bg(tint)
-                    .child(
-                        div()
-                            .font_semibold()
-                            .text_sm()
-                            .child(format!("{} is waiting for your answer.", detail.tool.name)),
-                    )
-                    .child(div().text_sm().opacity(0.8).child(format!("“{prompt}”")))
-            });
-
-        let accepts = s.accepts_input;
-        let send_row = h_flex()
+        // Send-input row: live when the view-model raises no notice; otherwise disabled
+        // with the tested review-mode/no-input explanation shown alongside.
+        let mut send_row = h_flex()
             .gap_2()
             .items_center()
-            .child(div().flex_1().child(Input::new(&self.inputs.send)))
-            .child(if accepts {
+            .child(div().flex_1().child(Input::new(&self.inputs.send)));
+        send_row = if vm.input_notice.is_none() {
+            send_row.child(
                 Button::new("send")
                     .label("Send input")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1027,33 +1040,35 @@ impl AppRoot {
                                 .update(cx, |st, cx| st.set_value("", window, cx));
                             cx.notify();
                         }
-                    }))
-            } else {
-                Button::new("send").label("Send input (unsupported)")
-            });
+                    })),
+            )
+        } else {
+            send_row.child(Button::new("send").label("Send input").disabled(true))
+        };
+        let input_notice = vm
+            .input_notice
+            .clone()
+            .map(|n| div().text_xs().opacity(0.6).child(n));
 
-        let board = self.app.task_board(id);
+        // Task board from the view-model rows (badge label/color already resolved).
         let mut board_el = v_flex().gap_1().child(section_label("Task board"));
-        if board.is_empty() {
+        if vm.board.is_empty() {
             board_el = board_el.child(empty("No tracked tasks."));
         }
-        for t in board {
-            let ttone = StatusTone::from_task(t.status);
+        for t in &vm.board {
             board_el = board_el.child(
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(status_pill(p, ttone))
-                    .child(div().font_semibold().text_sm().child(t.id.0.clone()))
+                    .child(badge_pill(&t.badge))
+                    .child(div().font_semibold().text_sm().child(t.id.clone()))
                     .child(div().text_sm().child(t.description.clone())),
             );
         }
 
-        // The telemetry rail (FR-019/019a), driven by the headless SessionView so labels
-        // and copy stay identical to the tested design strings.
-        let vm = SessionView::build(&self.app, id, &self.palette);
-        let rail = vm.as_ref().map(|vm| self.render_rail(&vm.rail));
-        let trim_notice = vm.as_ref().and_then(|vm| vm.trim_notice.clone()).map(|n| {
+        // The telemetry rail (FR-019/019a) + trimmed-output notice (FR-016a).
+        let rail = self.render_rail(&vm.rail);
+        let trim_notice = vm.trim_notice.clone().map(|n| {
             div()
                 .text_xs()
                 .opacity(0.75)
@@ -1103,12 +1118,64 @@ impl AppRoot {
         card()
             .gap_4()
             .child(header)
-            .children(answer_banner)
+            .children(banner)
             .child(controls)
             .child(send_row)
+            .children(input_notice)
             .child(board_el)
-            .children(rail)
+            .child(rail)
             .child(terminal_pane)
+    }
+
+    /// Render one view-model [`ActionButton`] control, wiring the tested labels back to
+    /// the same dispatched commands; a disabled control carries its stated reason as a
+    /// tooltip (never silently inert).
+    fn control_button(
+        &self,
+        session: SessionId,
+        control: &ActionButton,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let mut btn = Button::new(SharedString::from(format!("ctl-{}", control.label)))
+            .label(control.label.clone());
+        btn = match control.intent {
+            ButtonIntent::Primary => btn.primary(),
+            ButtonIntent::Danger => btn.danger(),
+            ButtonIntent::Ghost => btn.ghost(),
+            ButtonIntent::Tinted => btn.outline(),
+        };
+        if !control.enabled {
+            btn = btn.disabled(true);
+            if let Some(reason) = &control.disabled_reason {
+                btn = btn.tooltip(reason.clone());
+            }
+            return btn;
+        }
+        match control.label.as_str() {
+            "Confirm completion" => btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.dispatch(Command::ConfirmCompletion(session));
+                cx.notify();
+            })),
+            "Stop" => btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.dispatch(Command::StopSession(session));
+                cx.notify();
+            })),
+            "Clean up" => btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.dispatch(Command::CleanUp(session));
+                this.close_terminal();
+                this.view = View::Nav(NavItem::Fleet);
+                cx.notify();
+            })),
+            "Start similar" => btn.on_click(cx.listener(|this, _, _, cx| {
+                this.view = View::Start;
+                cx.notify();
+            })),
+            // The header Send-input control focuses the send row's input.
+            "Send input" => btn.on_click(cx.listener(|this, _, window, cx| {
+                this.inputs.send.update(cx, |s, cx| s.focus(window, cx));
+            })),
+            _ => btn,
+        }
     }
 
     /// The telemetry rail sections (Resources / Timeline / Outcome) from the view-model.
@@ -1230,10 +1297,8 @@ impl AppRoot {
     /// [`TasksBoardView`] so grouping/counts/copy stay identical to the tested design.
     fn render_tasks(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        // Keep the board live: re-read each session's tasks.md before building.
-        for s in self.app.fleet() {
-            let _ = self.app.core().refresh_task_board(s.id);
-        }
+        // The boards stay live via the 500ms refresh task, which re-reads tasks.md for
+        // sessions whose run is still on — never on the render path.
         let view = TasksBoardView::build(&self.app, &TaskFilters::default());
 
         let mut scaffold = screen(view.title, &view.stats_line());
@@ -1726,6 +1791,37 @@ fn status_dot(p: Palette, tone: StatusTone) -> impl IntoElement {
         .h(px(9.0))
         .rounded_full()
         .bg(col(tone.color(p.skin)))
+}
+
+/// A filled status pill from a resolved view-model [`StatusBadge`] — carries the
+/// status-specific label (e.g. "Waiting for input" vs "Awaiting confirmation" on the
+/// shared purple tone), never color alone.
+fn badge_pill(badge: &StatusBadge) -> impl IntoElement {
+    h_flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py(px(2.0))
+        .rounded_full()
+        .bg(col(badge.color))
+        .text_color(col(badge.foreground))
+        .text_xs()
+        .child(badge.glyph)
+        .child(badge.label)
+}
+
+/// The status hue behind a session state banner (prototype `banner-*` tint classes).
+fn banner_color(p: Palette, tone: BannerTone) -> Color {
+    let status_tone = match tone {
+        BannerTone::Info => StatusTone::Starting,
+        BannerTone::Ok => StatusTone::Completed,
+        BannerTone::Warn => StatusTone::Stalled,
+        BannerTone::Error => StatusTone::Failed,
+        BannerTone::Neutral => StatusTone::Stopped,
+        BannerTone::Await | BannerTone::Confirm => StatusTone::Awaiting,
+        BannerTone::Unknown => StatusTone::Unknown,
+    };
+    status_tone.color(p.skin)
 }
 
 /// A filled status pill: color + glyph + label (never color alone).

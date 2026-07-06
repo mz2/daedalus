@@ -10,6 +10,7 @@ description = "Canonical Workshop (Linux) sandbox backend for Daedalus."
 [dependencies]
 daedalus-proto = { workspace = true }
 daedalus-backend = { workspace = true }
+daedalus-zellij = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

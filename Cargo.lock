@@ -1476,6 +1476,7 @@ dependencies = [
  "async-trait",
  "daedalus-backend",
  "daedalus-proto",
+ "daedalus-zellij",
  "tokio",
 ]
 
@@ -1486,6 +1487,7 @@ dependencies = [
  "async-trait",
  "daedalus-backend",
  "daedalus-proto",
+ "daedalus-zellij",
  "tokio",
  "tracing",
 ]

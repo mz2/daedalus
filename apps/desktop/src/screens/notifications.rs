@@ -4,7 +4,7 @@
 //! "Asked a question" (waiting-input) and "Confirm completion" (confirm), both on the
 //! shared purple tone (design/README.md status palette).
 
-use daedalus_proto::{SessionId, SessionStatus, TerminalOrAbnormal};
+use daedalus_proto::{AttentionKind, SessionId, SessionStatus, TerminalOrAbnormal};
 
 use crate::components::StatusBadge;
 use crate::screens::session::{SessionFocus, SessionLink};
@@ -43,11 +43,7 @@ impl NotificationItem {
             .note
             .clone()
             .unwrap_or_else(|| StatusTone::session_label(n.status).to_string());
-        let focus = match n.status {
-            SessionStatus::WaitingForInput => Some(SessionFocus::AnswerPrompt),
-            SessionStatus::AwaitingConfirmation => Some(SessionFocus::ConfirmControls),
-            _ => None,
-        };
+        let focus = AttentionKind::from_status(n.status).and_then(SessionFocus::for_kind);
         Self {
             session: n.session,
             badge: StatusBadge::session(n.status, theme),

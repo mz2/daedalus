@@ -6,11 +6,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 
-use daedalus_proto::{
-    Availability, DiscoveredSession, DiscoveredSessionId, SessionIdentity, SourceId, SourceKind,
-};
+use daedalus_proto::{Availability, DiscoveredSession, SessionIdentity, SourceId, SourceKind};
 
-use crate::DiscoverySource;
+use crate::{advertised_session, DiscoverySource};
 
 /// The Daedalus mDNS service type.
 pub const SERVICE_TYPE: &str = "_daedalus._tcp.local.";
@@ -108,20 +106,14 @@ fn resolve(source: SourceId, info: &mdns_sd::ServiceInfo) -> Option<DiscoveredSe
         .unwrap_or_else(|| info.get_hostname())
         .to_string();
 
-    Some(DiscoveredSession {
-        id: DiscoveredSessionId {
-            source,
-            identity: SessionIdentity::new(identity),
-        },
-        kind: SourceKind::Mdns,
-        source_availability: Availability::Available,
+    Some(advertised_session(
+        source,
+        SessionIdentity::new(identity),
+        SourceKind::Mdns,
         zellij_session,
         host_label,
-        status: None,
-        attachable: true,
-        attach_reason: None,
-        artifacts: None,
-    })
+        None,
+    ))
 }
 
 #[async_trait]

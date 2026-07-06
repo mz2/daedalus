@@ -2,30 +2,12 @@
 //! when the tool does not accept input (C-A2).
 
 use bytes::Bytes;
-use daedalus_proto::{Capabilities, InvocationSpec, ToolDef};
 use daedalus_tests::Fixture;
-
-fn no_input_tool(fx: &Fixture, name: &str) -> daedalus_proto::ToolId {
-    fx.core
-        .register_tool(ToolDef {
-            name: name.into(),
-            invocation: InvocationSpec {
-                program: "batch-agent".into(),
-                args: vec![],
-                env: vec![],
-            },
-            capabilities: Capabilities {
-                accepts_interactive_input: false,
-                prompt_convention: None,
-            },
-        })
-        .unwrap()
-}
 
 #[tokio::test]
 async fn c_a2_send_input_rejected_when_unsupported() {
     let fx = Fixture::new();
-    let tool = no_input_tool(&fx, "batch");
+    let tool = fx.register_tool_with("batch", false, None);
     let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
     let err = fx
         .core

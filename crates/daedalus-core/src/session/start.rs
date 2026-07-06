@@ -94,8 +94,7 @@ impl Core {
         // 6. Launch the agent. On failure: tear the environment down and remove the record.
         match backend.start_agent(&env.id, &tool.invocation).await {
             Ok(handle) => {
-                let running = transition(SessionStatus::Starting, Trigger::Started)
-                    .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+                let running = transition(SessionStatus::Starting, Trigger::Started)?;
                 self.store.set_session_started(id, clock::now())?;
                 self.store.set_session_status(id, running, None, None)?;
                 self.runtime.lock().expect("poisoned").insert(

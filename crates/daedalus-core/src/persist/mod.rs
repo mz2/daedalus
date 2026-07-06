@@ -5,6 +5,7 @@
 //! excessive-output edge case). All records are retained until the operator deletes them —
 //! no auto-expiry (FR-030a).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -137,6 +138,46 @@ CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics (session_id, timestamp
 pub struct Store {
     conn: Mutex<Connection>,
     captures_dir: PathBuf,
+    /// Per-session capture line counters (lazily initialised from the file on first
+    /// query, then kept current by [`Store::append_output`]) so the trimmed-output
+    /// notice never re-reads whole capture files.
+    capture_lines: Mutex<HashMap<SessionId, CaptureCount>>,
+}
+
+/// Incrementally-maintained line accounting for one capture file: newline count plus the
+/// last byte written, so a trailing unterminated line still counts (FR-016a).
+#[derive(Debug, Clone, Copy, Default)]
+struct CaptureCount {
+    newlines: u64,
+    last_byte: Option<u8>,
+}
+
+impl CaptureCount {
+    fn observe(&mut self, chunk: &[u8]) {
+        self.newlines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
+        if let Some(last) = chunk.last() {
+            self.last_byte = Some(*last);
+        }
+    }
+
+    fn lines(self) -> u64 {
+        match self.last_byte {
+            None => 0,
+            Some(b'\n') => self.newlines,
+            Some(_) => self.newlines + 1,
+        }
+    }
+}
+
+/// One schema upgrade step (an entry in [`Store::MIGRATIONS`]).
+type Migration = fn(&Connection) -> Result<(), StoreError>;
+
+/// Map SQLite's no-rows result onto [`StoreError::NotFound`] (the `get_*` lookups).
+fn not_found(e: rusqlite::Error) -> StoreError {
+    match e {
+        rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound,
+        other => other.into(),
+    }
 }
 
 fn enum_to_text<T: Serialize>(v: &T) -> Result<String, StoreError> {
@@ -162,10 +203,15 @@ impl Store {
         let store = Self {
             conn: Mutex::new(conn),
             captures_dir,
+            capture_lines: Mutex::new(HashMap::new()),
         };
         store.migrate()?;
         Ok(store)
     }
+
+    /// Ordered migration ladder: entry `i` upgrades schema version `i + 1` to `i + 2`.
+    const MIGRATIONS: [Migration; (SCHEMA_VERSION - 1) as usize] =
+        [Self::upgrade_v1_to_v2, Self::upgrade_v2_to_v3];
 
     fn migrate(&self) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");
@@ -183,8 +229,15 @@ impl Store {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None), // fresh database
                 other => Err(other),
             })?;
-        if recorded.as_deref() == Some("1") {
-            Self::upgrade_v1_to_v2(&conn)?;
+        // A fresh database (or an unreadable record) starts at the current version — the
+        // schema batch above already created every table in its final shape.
+        let recorded: i64 = recorded
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(SCHEMA_VERSION);
+        if (1..SCHEMA_VERSION).contains(&recorded) {
+            for v in recorded..SCHEMA_VERSION {
+                Self::MIGRATIONS[(v - 1) as usize](&conn)?;
+            }
         }
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -219,6 +272,12 @@ impl Store {
                 (id, wrapped),
             )?;
         }
+        Ok(())
+    }
+
+    /// v2 → v3 (T086, FR-021b): only the new `config` table, which the
+    /// `CREATE TABLE IF NOT EXISTS` schema batch already created — nothing to alter.
+    fn upgrade_v2_to_v3(_conn: &Connection) -> Result<(), StoreError> {
         Ok(())
     }
 
@@ -261,8 +320,9 @@ impl Store {
     /// All persisted per-backend idle rates (FR-021b).
     pub fn backend_idle_rates(&self) -> Result<Vec<(BackendKind, f64)>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt = conn
-            .prepare("SELECT key, value FROM config WHERE key LIKE 'idle_rate.%' ORDER BY key")?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT key, value FROM config WHERE key LIKE 'idle_rate.%' ORDER BY key",
+        )?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         let mut out = Vec::new();
         for row in rows {
@@ -307,40 +367,22 @@ impl Store {
     pub fn get_tool(&self, id: ToolId) -> Result<AgenticTool, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
         conn.query_row(
-            "SELECT id, name, invocation, capabilities FROM tools WHERE id = ?1",
+            "SELECT name, invocation, capabilities FROM tools WHERE id = ?1",
             [id.to_string()],
-            |r| {
-                Ok(AgenticTool {
-                    id,
-                    name: r.get(1)?,
-                    invocation: serde_json::from_str(&r.get::<_, String>(2)?)
-                        .expect("valid invocation json"),
-                    capabilities: serde_json::from_str(&r.get::<_, String>(3)?)
-                        .expect("valid capabilities json"),
-                })
-            },
+            |r| Ok(row_to_tool(id, r)),
         )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound,
-            other => other.into(),
-        })
+        .map_err(not_found)
     }
 
     /// List all registered tools.
     pub fn list_tools(&self) -> Result<Vec<AgenticTool>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt =
-            conn.prepare("SELECT id, name, invocation, capabilities FROM tools ORDER BY name")?;
+        let mut stmt = conn
+            .prepare_cached("SELECT name, invocation, capabilities, id FROM tools ORDER BY name")?;
         let rows = stmt.query_map([], |r| {
-            let id: String = r.get(0)?;
-            Ok(AgenticTool {
-                id: ToolId::from_uuid(id.parse().expect("uuid")),
-                name: r.get(1)?,
-                invocation: serde_json::from_str(&r.get::<_, String>(2)?)
-                    .expect("valid invocation json"),
-                capabilities: serde_json::from_str(&r.get::<_, String>(3)?)
-                    .expect("valid capabilities json"),
-            })
+            // The id is deliberately the LAST column so the shared row mapping applies.
+            let id = ToolId::from_uuid(r.get::<_, String>(3)?.parse().expect("uuid"));
+            Ok(row_to_tool(id, r))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -379,10 +421,7 @@ impl Store {
                 })
             },
         )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound,
-            other => other.into(),
-        })
+        .map_err(not_found)
     }
 
     /// Insert (or replace) a backend record.
@@ -443,41 +482,21 @@ impl Store {
         conn.query_row(
             "SELECT backend_id, origin, worktree, lifecycle FROM environments WHERE id = ?1",
             [id.to_string()],
-            |r| {
-                let worktree: Option<String> = r.get(2)?;
-                Ok(SandboxEnvironment {
-                    id,
-                    backend_id: BackendId::from_uuid(r.get::<_, String>(0)?.parse().expect("uuid")),
-                    origin: text_to_enum::<Origin>(&r.get::<_, String>(1)?).expect("origin"),
-                    worktree_ref: worktree
-                        .map(|w| serde_json::from_str::<WorktreeRef>(&w).expect("worktree json")),
-                    lifecycle: text_to_enum::<EnvLifecycle>(&r.get::<_, String>(3)?)
-                        .expect("lifecycle"),
-                })
-            },
+            |r| Ok(row_to_environment(id, r)),
         )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound,
-            other => other.into(),
-        })
+        .map_err(not_found)
     }
 
     /// List every environment record (§6.7 — the Environments screen).
     pub fn list_environments(&self) -> Result<Vec<SandboxEnvironment>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt =
-            conn.prepare("SELECT id, backend_id, origin, worktree, lifecycle FROM environments")?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT backend_id, origin, worktree, lifecycle, id FROM environments",
+        )?;
         let rows = stmt.query_map([], |r| {
-            let worktree: Option<String> = r.get(3)?;
-            Ok(SandboxEnvironment {
-                id: EnvironmentId::from_uuid(r.get::<_, String>(0)?.parse().expect("uuid")),
-                backend_id: BackendId::from_uuid(r.get::<_, String>(1)?.parse().expect("uuid")),
-                origin: text_to_enum::<Origin>(&r.get::<_, String>(2)?).expect("origin"),
-                worktree_ref: worktree
-                    .map(|w| serde_json::from_str::<WorktreeRef>(&w).expect("worktree json")),
-                lifecycle: text_to_enum::<EnvLifecycle>(&r.get::<_, String>(4)?)
-                    .expect("lifecycle"),
-            })
+            // The id is deliberately the LAST column so the shared row mapping applies.
+            let id = EnvironmentId::from_uuid(r.get::<_, String>(4)?.parse().expect("uuid"));
+            Ok(row_to_environment(id, r))
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -542,16 +561,13 @@ impl Store {
             [id.to_string()],
             |r| Ok(row_to_session(id, r)),
         )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound,
-            other => other.into(),
-        })
+        .map_err(not_found)
     }
 
     /// List all sessions, newest first.
     pub fn list_sessions(&self) -> Result<Vec<Session>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input, pending_prompt, waiting_since, work_item_ref, last_known_status, id FROM sessions ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -674,7 +690,7 @@ impl Store {
     /// List a session's tracked tasks in id order.
     pub fn list_tasks(&self, session: SessionId) -> Result<Vec<TrackedTask>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT task_id, description, status, updated_at FROM tasks WHERE session_id = ?1 ORDER BY task_id",
         )?;
         let rows = stmt.query_map([session.to_string()], |r| {
@@ -691,6 +707,11 @@ impl Store {
 
     // ----- Events + capture files -----
 
+    /// The per-session output capture file.
+    fn capture_path(&self, session: SessionId) -> PathBuf {
+        self.captures_dir.join(format!("{session}.log"))
+    }
+
     /// Append redacted output bytes to the session's capture file and record an
     /// [`EventPayload::Output`] referencing the written span (FR-018).
     pub fn append_output(
@@ -700,13 +721,24 @@ impl Store {
         redacted: &[u8],
     ) -> Result<EventRecord, StoreError> {
         use std::io::Write;
-        let path = self.captures_dir.join(format!("{session}.log"));
+        let path = self.capture_path(session);
         let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
         file.write_all(redacted)?;
+
+        // Keep the line counter current when it is already initialised; an absent entry
+        // stays absent so the first `capture_line_count` reads the whole file once.
+        if let Some(count) = self
+            .capture_lines
+            .lock()
+            .expect("poisoned")
+            .get_mut(&session)
+        {
+            count.observe(redacted);
+        }
 
         let event = EventRecord {
             id: EventId::new(),
@@ -724,32 +756,41 @@ impl Store {
     }
 
     /// Read the tail of a session's redacted capture file (empty if none), for display.
+    /// Seeks to the tail instead of reading the whole file.
     #[must_use]
     pub fn output_tail(&self, session: SessionId, max_bytes: usize) -> String {
-        let path = self.captures_dir.join(format!("{session}.log"));
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let start = bytes.len().saturating_sub(max_bytes);
-                String::from_utf8_lossy(&bytes[start..]).into_owned()
-            }
+        use std::io::{Read, Seek, SeekFrom};
+        let read_tail = || -> std::io::Result<Vec<u8>> {
+            let mut file = std::fs::File::open(self.capture_path(session))?;
+            let len = file.metadata()?.len();
+            file.seek(SeekFrom::Start(len.saturating_sub(max_bytes as u64)))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        };
+        match read_tail() {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(_) => String::new(),
         }
     }
 
     /// Line count of a session's persisted capture file (0 if none) — the "M" of the
     /// trimmed-output notice "showing last N of M lines" (FR-016a). A trailing
-    /// unterminated line counts as a line.
+    /// unterminated line counts as a line. The file is read in full only on the first
+    /// query per session; [`Self::append_output`] keeps the counter current after that.
     #[must_use]
     pub fn capture_line_count(&self, session: SessionId) -> u64 {
-        let path = self.captures_dir.join(format!("{session}.log"));
-        match std::fs::read(&path) {
-            Ok(bytes) if bytes.is_empty() => 0,
-            Ok(bytes) => {
-                let newlines = bytes.iter().filter(|b| **b == b'\n').count() as u64;
-                newlines + u64::from(*bytes.last().expect("non-empty") != b'\n')
-            }
-            Err(_) => 0,
-        }
+        let mut counts = self.capture_lines.lock().expect("poisoned");
+        counts
+            .entry(session)
+            .or_insert_with(|| {
+                let mut count = CaptureCount::default();
+                if let Ok(bytes) = std::fs::read(self.capture_path(session)) {
+                    count.observe(&bytes);
+                }
+                count
+            })
+            .lines()
     }
 
     /// Insert a pre-built event record.
@@ -773,19 +814,57 @@ impl Store {
         let conn = self.conn.lock().expect("poisoned");
         // rowid breaks same-millisecond ties in insertion order, keeping the timeline
         // stable (FR-019a).
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, timestamp, kind, payload FROM events WHERE session_id = ?1 ORDER BY timestamp, rowid",
         )?;
-        let rows = stmt.query_map([session.to_string()], |r| {
-            Ok(EventRecord {
-                id: EventId::from_uuid(r.get::<_, String>(0)?.parse().expect("uuid")),
-                session_id: session,
-                timestamp: Timestamp::from_millis(r.get(1)?),
-                kind: text_to_enum::<EventKind>(&r.get::<_, String>(2)?).expect("kind"),
-                payload: serde_json::from_str(&r.get::<_, String>(3)?).expect("payload json"),
-            })
-        })?;
+        let rows = stmt.query_map([session.to_string()], |r| Ok(row_to_event(session, r)))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The newest `limit` non-`Output` events of a session, oldest first — the session
+    /// timeline (FR-019a). Output chunks are excluded in SQL (the terminal renders them
+    /// from the capture file), so the timeline never pages through high-volume output.
+    pub fn timeline_events(
+        &self,
+        session: SessionId,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, timestamp, kind, payload FROM events WHERE session_id = ?1 AND kind != ?2 ORDER BY timestamp DESC, rowid DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            (
+                session.to_string(),
+                enum_to_text(&EventKind::Output)?,
+                limit as i64,
+            ),
+            |r| Ok(row_to_event(session, r)),
+        )?;
+        let mut events: Vec<EventRecord> = rows.collect::<Result<_, _>>()?;
+        events.reverse(); // newest-first query → oldest-first timeline
+        Ok(events)
+    }
+
+    /// The most recent lifecycle event of a session, if any — when it entered its current
+    /// state (FR-021a) without scanning the full event history.
+    pub fn last_lifecycle_event(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<EventRecord>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, timestamp, kind, payload FROM events WHERE session_id = ?1 AND kind = ?2 ORDER BY timestamp DESC, rowid DESC LIMIT 1",
+        )?;
+        stmt.query_row(
+            (session.to_string(), enum_to_text(&EventKind::Lifecycle)?),
+            |r| Ok(row_to_event(session, r)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other.into()),
+        })
     }
 
     // ----- Metrics -----
@@ -811,7 +890,7 @@ impl Store {
         session: SessionId,
     ) -> Result<Vec<ResourceUsageMetric>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT metric, value, timestamp FROM metrics m WHERE session_id = ?1 AND timestamp = (SELECT MAX(timestamp) FROM metrics WHERE session_id = m.session_id AND metric = m.metric) GROUP BY metric",
         )?;
         let rows = stmt.query_map([session.to_string()], |r| {
@@ -834,7 +913,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ResourceUsageMetric>, StoreError> {
         let conn = self.conn.lock().expect("poisoned");
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT value, timestamp FROM metrics WHERE session_id = ?1 AND metric = ?2 ORDER BY timestamp DESC, rowid DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(
@@ -851,6 +930,43 @@ impl Store {
         let mut samples: Vec<ResourceUsageMetric> = rows.collect::<Result<_, _>>()?;
         samples.reverse(); // newest-first query → oldest-first history
         Ok(samples)
+    }
+}
+
+fn row_to_event(session: SessionId, r: &rusqlite::Row<'_>) -> EventRecord {
+    EventRecord {
+        id: EventId::from_uuid(r.get::<_, String>(0).expect("col").parse().expect("uuid")),
+        session_id: session,
+        timestamp: Timestamp::from_millis(r.get(1).expect("col")),
+        kind: text_to_enum::<EventKind>(&r.get::<_, String>(2).expect("col")).expect("kind"),
+        payload: serde_json::from_str(&r.get::<_, String>(3).expect("col")).expect("payload json"),
+    }
+}
+
+fn row_to_tool(id: ToolId, r: &rusqlite::Row<'_>) -> AgenticTool {
+    AgenticTool {
+        id,
+        name: r.get(0).expect("col"),
+        invocation: serde_json::from_str(&r.get::<_, String>(1).expect("col"))
+            .expect("valid invocation json"),
+        capabilities: serde_json::from_str(&r.get::<_, String>(2).expect("col"))
+            .expect("valid capabilities json"),
+    }
+}
+
+fn row_to_environment(id: EnvironmentId, r: &rusqlite::Row<'_>) -> SandboxEnvironment {
+    SandboxEnvironment {
+        id,
+        backend_id: BackendId::from_uuid(
+            r.get::<_, String>(0).expect("col").parse().expect("uuid"),
+        ),
+        origin: text_to_enum::<Origin>(&r.get::<_, String>(1).expect("col")).expect("origin"),
+        worktree_ref: r
+            .get::<_, Option<String>>(2)
+            .expect("col")
+            .map(|w| serde_json::from_str::<WorktreeRef>(&w).expect("worktree json")),
+        lifecycle: text_to_enum::<EnvLifecycle>(&r.get::<_, String>(3).expect("col"))
+            .expect("lifecycle"),
     }
 }
 

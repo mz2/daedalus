@@ -162,15 +162,13 @@ impl NeedsRow {
     }
 
     /// Activation intent: jump straight into the session with answer-mode focus (T078;
-    /// prototype `onOpen(item.id, { answer: true })`).
+    /// prototype `onOpen(item.id, { answer: true })`) — non-answerable kinds still drop
+    /// into the terminal.
     #[must_use]
     pub fn activate(&self) -> SessionLink {
         SessionLink {
             session: self.session,
-            focus: Some(match self.kind {
-                AttentionKind::AwaitingConfirmation => SessionFocus::ConfirmControls,
-                _ => SessionFocus::AnswerPrompt,
-            }),
+            focus: Some(SessionFocus::for_kind(self.kind).unwrap_or(SessionFocus::AnswerPrompt)),
         }
     }
 

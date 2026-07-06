@@ -3,7 +3,7 @@
 //! reassurance (prototype `screens.jsx` Backends, `host-down` state).
 
 use daedalus_app::{App, AppQueryAsync};
-use daedalus_proto::{Availability, BackendKind, SandboxEnvironment};
+use daedalus_proto::{Availability, BackendKind, BackendStatus, SandboxEnvironment};
 
 use crate::components::{ActionButton, ButtonIntent, Chip, EmptyState, StatusBadge};
 use crate::theme::{StatusTone, Theme};
@@ -59,9 +59,20 @@ impl BackendsView {
 
     /// Build from current backend statuses.
     pub async fn build(app: &App, theme: &Theme) -> Self {
-        let rows: Vec<BackendRow> = app
-            .backends()
-            .await
+        let statuses = app.backends().await;
+        let environments = app.core().environments().unwrap_or_default();
+        Self::from_data(statuses, environments, theme)
+    }
+
+    /// Shape prefetched backend statuses + environments into the view — lets a refresh
+    /// tick fetch each once and feed every consumer (no double polling).
+    #[must_use]
+    pub fn from_data(
+        statuses: Vec<BackendStatus>,
+        environments: Vec<SandboxEnvironment>,
+        theme: &Theme,
+    ) -> Self {
+        let rows: Vec<BackendRow> = statuses
             .into_iter()
             .map(|s| {
                 let tone = match s.availability {
@@ -83,7 +94,6 @@ impl BackendsView {
             .iter()
             .any(|r| r.availability == Availability::Unavailable)
             .then_some(HOST_DOWN_REASSURANCE);
-        let environments = app.core().environments().unwrap_or_default();
         Self {
             rows,
             reassurance,

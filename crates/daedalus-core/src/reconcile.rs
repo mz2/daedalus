@@ -18,8 +18,7 @@ impl Core {
         if session.status == SessionStatus::Unknown {
             return Ok(());
         }
-        let next = transition(session.status, Trigger::ContactLost)
-            .map_err(|e| CoreError::IllegalTransition(e.to_string()))?;
+        let next = transition(session.status, Trigger::ContactLost)?;
         self.store
             .set_session_last_known(id, Some(session.status))?;
         self.store.set_session_status(id, next, None, None)?;

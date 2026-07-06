@@ -25,12 +25,6 @@ macro_rules! uuid_id {
             pub fn from_uuid(uuid: Uuid) -> Self {
                 Self(uuid)
             }
-
-            /// The underlying UUID.
-            #[must_use]
-            pub fn as_uuid(&self) -> Uuid {
-                self.0
-            }
         }
 
         impl Default for $name {

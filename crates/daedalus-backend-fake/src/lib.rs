@@ -11,10 +11,12 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use daedalus_backend::{AcquireRequest, AgentHandle, Backend, BackendError, UsageSample};
+use daedalus_backend::{
+    require_worktree, AcquireRequest, AgentHandle, Backend, BackendError, UsageSample,
+};
 use daedalus_proto::{
-    Availability, BackendId, BackendKind, EnvLifecycle, EnvironmentId, InvocationSpec, MetricKind,
-    Origin, SandboxEnvironment,
+    Availability, BackendId, BackendKind, EnvironmentId, InvocationSpec, MetricKind, Origin,
+    SandboxEnvironment,
 };
 
 /// Per-environment bookkeeping inside the fake.
@@ -134,20 +136,10 @@ impl Backend for FakeBackend {
                 // Un-creatable worktree ⇒ WorktreeUnavailable, no environment (C-B1).
                 return Err(BackendError::WorktreeUnavailable(reason));
             }
-            if req.worktree.is_none() {
-                return Err(BackendError::WorktreeUnavailable(
-                    "pre-existing environment requires a worktree reference".into(),
-                ));
-            }
         }
+        require_worktree(&req)?;
 
-        let env = SandboxEnvironment {
-            id: EnvironmentId::new(),
-            backend_id: self.id,
-            origin: req.origin,
-            worktree_ref: req.worktree,
-            lifecycle: EnvLifecycle::Ready,
-        };
+        let env = req.into_ready_environment(self.id);
         inner.envs.insert(
             env.id,
             EnvState {
@@ -175,7 +167,7 @@ impl Backend for FakeBackend {
         state.agent_running = true;
         Ok(AgentHandle {
             env: *env,
-            zellij_session: format!("daedalus-{env}"),
+            zellij_session: daedalus_zellij::format_session_name(env),
         })
     }
 
