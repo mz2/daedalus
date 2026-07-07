@@ -55,6 +55,12 @@ pub trait OpenShellControl: Send + Sync {
     /// Whether GPU passthrough is ready (NVIDIA driver + Container Toolkit; Linux hosts
     /// only — macOS sandboxes never see a GPU).
     fn gpu_ready(&self) -> bool;
+    /// Operator-configured sandbox image for `sandbox create --from` (a community image
+    /// name, a full container image reference, or a Dockerfile path). `None` uses
+    /// OpenShell's default base image.
+    fn sandbox_image(&self) -> Option<String> {
+        None
+    }
     /// Run a control-plane command (`sandbox create`/`delete`, …) to completion.
     async fn run(&self, args: &[String]) -> Result<CliOutput, String>;
     /// Spawn a long-lived command detached — the agent's `sandbox exec` lives as long as
@@ -100,6 +106,12 @@ impl OpenShellControl for CliOpenShellControl {
     fn gpu_ready(&self) -> bool {
         // GPU is Linux-hosts-only (CDI / NVIDIA Container Toolkit).
         cfg!(target_os = "linux") && which_on_path("nvidia-smi").is_some()
+    }
+
+    fn sandbox_image(&self) -> Option<String> {
+        std::env::var("DAEDALUS_OPENSHELL_FROM")
+            .ok()
+            .filter(|s| !s.is_empty())
     }
 
     async fn run(&self, args: &[String]) -> Result<CliOutput, String> {
@@ -320,6 +332,10 @@ impl Backend for OpenShellBackend {
         let mut create = args(&["sandbox", "create", "--name", &name]);
         create.push("--policy".into());
         create.push(policy_path.to_string_lossy().into_owned());
+        if let Some(image) = self.control.sandbox_image() {
+            create.push("--from".into());
+            create.push(image);
+        }
         if let Some(cpu) = limits.cpu_cores {
             create.push("--cpu".into());
             create.push(cpu.to_string());

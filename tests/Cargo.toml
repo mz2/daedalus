@@ -121,3 +121,6 @@ path = "integration/tasks_board.rs"
 [[test]]
 name = "integration_limits"
 path = "integration/limits.rs"
+[[test]]
+name = "integration_openshell_e2e"
+path = "integration/openshell_e2e.rs"

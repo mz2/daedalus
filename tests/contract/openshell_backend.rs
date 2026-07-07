@@ -26,6 +26,7 @@ struct ScriptedControl {
     binary: Option<String>,
     runtime_ready: bool,
     gpu_ready: bool,
+    sandbox_image: Option<String>,
     fail_run: Option<String>,
     fail_spawn: Option<String>,
     calls: Mutex<Vec<Vec<String>>>,
@@ -64,6 +65,9 @@ impl OpenShellControl for ScriptedControl {
     }
     fn gpu_ready(&self) -> bool {
         self.gpu_ready
+    }
+    fn sandbox_image(&self) -> Option<String> {
+        self.sandbox_image.clone()
     }
     async fn run(&self, args: &[String]) -> Result<CliOutput, String> {
         self.calls.lock().expect("poisoned").push(args.to_vec());
@@ -324,6 +328,26 @@ async fn acquire_maps_resource_limits_onto_create_flags() {
         !create.contains(&"--gpu".to_string()),
         "no GPU on this host"
     );
+}
+
+// An operator-configured sandbox image rides `--from` (community name, image reference,
+// or Dockerfile path — DAEDALUS_OPENSHELL_FROM on the default control); unset means
+// OpenShell's default base image, no flag.
+#[tokio::test]
+async fn acquire_passes_the_configured_image_via_from() {
+    let (control, b) = backend_with(ScriptedControl {
+        sandbox_image: Some("daedalus/e2e-openshell:latest".into()),
+        ..ScriptedControl::ready()
+    });
+    b.acquire(fresh_req()).await.unwrap();
+    let create = &control.recorded(&["sandbox", "create"])[0];
+    let from = create.iter().position(|a| a == "--from").expect("--from");
+    assert_eq!(create[from + 1], "daedalus/e2e-openshell:latest");
+
+    let (control, b) = backend_with(ScriptedControl::ready());
+    b.acquire(fresh_req()).await.unwrap();
+    let create = &control.recorded(&["sandbox", "create"])[0];
+    assert!(!create.contains(&"--from".to_string()), "{create:?}");
 }
 
 // GPU is requested at create time only when the host is GPU-ready.

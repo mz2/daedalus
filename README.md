@@ -143,7 +143,23 @@ openshell sandbox list                 # expect: no daedalus-* sandboxes left be
 (A host-side `zellij: command not found` line is harmless if zellij isn't installed on the
 host; the attach story inside sandboxes is tracked on issue #9.)
 
-### 3. Manual policy smoke (what the backend enforces)
+### 3. Offline agent E2E (real agent, local model, zero egress)
+
+The strongest end-to-end proof (issue #19): a real coding agent (**opencode**) driven by a
+tiny local model (**gemma4:e2b** via ollama, baked into the image at build time) fixes a
+fixture bug inside an OpenShell sandbox — under the same deny-all egress policy Daedalus
+generates for every session. No API keys, no network, no providers:
+
+```bash
+docker build -t daedalus/e2e-openshell:latest tests/e2e/openshell/   # one-time, ~5 GB
+cargo test -p daedalus-tests --test integration_openshell_e2e -- --nocapture
+```
+
+Self-activating: skips unless `openshell` + Docker + the image are present. Budget ~10
+minutes — the model runs on CPU inside the Docker VM. The test tears its sandbox down on
+every path and asserts the outcome (`add(3, 4) == 7`), not the transcript.
+
+### 4. Manual policy smoke (what the backend enforces)
 
 Inspect and verify the per-session confinement by hand — deny-all egress means the `curl`
 must fail with `CONNECT tunnel failed, response 403`:
@@ -165,7 +181,7 @@ openshell sandbox exec -n probe --no-tty --timeout 15 -- curl -sS -m 5 https://e
 openshell sandbox delete probe
 ```
 
-### 4. In the app
+### 5. In the app
 
 `DAEDALUS_BACKEND=openshell cargo run -p daedalus-desktop` (add `--features gpui` for the
 window). The backends view shows OpenShell **Available** when the CLI + Docker are up,
