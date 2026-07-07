@@ -11,6 +11,17 @@ use daedalus_proto::SessionId;
 pub type ByteStream = mpsc::Receiver<Bytes>;
 /// A sink for operator keystrokes / send-input flowing into the agent's terminal.
 pub type ByteSink = mpsc::Sender<Bytes>;
+/// A sink for surface-driven terminal geometry changes (the view was resized).
+pub type ResizeSink = mpsc::Sender<TerminalSize>;
+
+/// Terminal geometry, as the surface's terminal view measures it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSize {
+    /// Character columns.
+    pub cols: u16,
+    /// Character rows.
+    pub rows: u16,
+}
 
 /// A duplex terminal channel for one attached session (contract `terminal-attach.md`).
 #[derive(Debug)]
@@ -19,6 +30,16 @@ pub struct TerminalChannel {
     pub output: ByteStream,
     /// Operator keystrokes / send-input (FR-023), if the tool accepts input.
     pub input: ByteSink,
+    /// Surface-driven geometry updates → applied to the attach's PTY (SIGWINCH to the
+    /// bridge). Terminals without a real PTY (in-memory/scripted) accept-and-ignore;
+    /// senders should not treat a send error as fatal.
+    pub resize: ResizeSink,
+}
+
+/// A resize sink whose updates go nowhere — for terminals with no PTY to resize
+/// (in-memory/scripted). The receiver is dropped, so sends fail; callers ignore that.
+fn ignored_resize_sink() -> ResizeSink {
+    mpsc::channel(1).0
 }
 
 /// Why an attach failed. Never surfaced as a silent blank view (contract C-T2).
@@ -148,6 +169,7 @@ impl TerminalAttach for ProcessTerminal {
 
         let (out_tx, out_rx) = mpsc::channel::<Bytes>(1024);
         let (in_tx, mut in_rx) = mpsc::channel::<Bytes>(1024);
+        let (resize_tx, mut resize_rx) = mpsc::channel::<TerminalSize>(16);
         let child = std::sync::Arc::new(std::sync::Mutex::new(child));
 
         // Surface detached (both channel ends dropped) ⇒ kill the bridge so the blocking
@@ -159,10 +181,8 @@ impl TerminalAttach for ProcessTerminal {
             let _ = watchdog_child.lock().expect("poisoned").kill();
         });
 
-        // PTY master → surface (blocking reader on a dedicated thread). `_master` keeps
-        // the master end alive for the bridge's lifetime.
+        // PTY master → surface (blocking reader on a dedicated thread).
         let reader_child = child.clone();
-        let _master = pair.master;
         std::thread::spawn(move || {
             use std::io::Read as _;
             let mut buf = [0u8; 8192];
@@ -180,7 +200,22 @@ impl TerminalAttach for ProcessTerminal {
                 }
             }
             let _ = reader_child.lock().expect("poisoned").kill();
-            drop(_master);
+        });
+
+        // Surface geometry → PTY winsize (SIGWINCH to the bridge). This thread owns the
+        // master end, keeping it alive for the bridge's lifetime; it exits when the
+        // channel closes (TerminalChannel dropped).
+        let master = pair.master;
+        std::thread::spawn(move || {
+            while let Some(size) = resize_rx.blocking_recv() {
+                let _ = master.resize(portable_pty::PtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
+            drop(master);
         });
 
         // Surface keystrokes / SendInput → PTY master (FR-023).
@@ -196,6 +231,7 @@ impl TerminalAttach for ProcessTerminal {
         Ok(TerminalChannel {
             output: out_rx,
             input: in_tx,
+            resize: resize_tx,
         })
     }
 }
@@ -249,6 +285,7 @@ impl TerminalAttach for InMemoryTerminal {
         Ok(TerminalChannel {
             output: out_rx,
             input: in_tx,
+            resize: ignored_resize_sink(),
         })
     }
 }
@@ -305,6 +342,7 @@ impl TerminalAttach for ScriptedLiveTerminal {
         Ok(TerminalChannel {
             output: out_rx,
             input: in_tx,
+            resize: ignored_resize_sink(),
         })
     }
 }

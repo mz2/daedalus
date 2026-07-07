@@ -228,6 +228,16 @@ async fn start_agent_launches_and_stop_kills_inside_a_real_sandbox() {
             if first.is_empty() {
                 return Err("bridge delivered an empty first chunk".into());
             }
+            // Surface-driven resize is accepted by a live bridge (winsize/SIGWINCH
+            // delivery is contract-tested hermetically; propagation into the sandbox is
+            // the CLI's business, as with ssh).
+            ch.resize
+                .send(daedalus_zellij::TerminalSize {
+                    cols: 100,
+                    rows: 30,
+                })
+                .await
+                .map_err(|_| "resize channel closed on a live bridge".to_string())?;
             // Dropping the channel detaches (kills the bridge, not the session).
         }
 

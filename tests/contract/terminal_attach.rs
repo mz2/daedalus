@@ -96,6 +96,48 @@ async fn process_terminal_bridges_duplex_io() {
     }
 }
 
+// Surface-driven resize reaches the bridge child as a real winsize change + SIGWINCH on
+// its controlling PTY (issue #15 follow-up): the child traps WINCH and reports its size.
+#[tokio::test]
+async fn process_terminal_resizes_the_bridge_pty() {
+    use daedalus_zellij::{ProcessTerminal, TerminalAttach, TerminalSize};
+    let terminal = ProcessTerminal::new(Box::new(|_| {
+        Ok(vec![
+            "sh".into(),
+            "-c".into(),
+            // Print the initial size, then re-print on every WINCH.
+            "trap 'stty size' WINCH; stty size; while :; do sleep 0.2; done".into(),
+        ])
+    }));
+    let mut ch = terminal.attach(SessionId::new()).await.unwrap();
+
+    // Initial geometry: the fixed default (120x40 → "40 120").
+    let mut seen = String::new();
+    while !seen.contains("40 120") {
+        let chunk = tokio::time::timeout(Duration::from_secs(5), ch.output.recv())
+            .await
+            .expect("initial size within 5s")
+            .expect("bridge open");
+        seen.push_str(&String::from_utf8_lossy(&chunk));
+    }
+
+    ch.resize
+        .send(TerminalSize {
+            cols: 200,
+            rows: 50,
+        })
+        .await
+        .expect("resize accepted");
+
+    while !seen.contains("50 200") {
+        let chunk = tokio::time::timeout(Duration::from_secs(5), ch.output.recv())
+            .await
+            .expect("WINCH-reported size within 5s of resize")
+            .expect("bridge open");
+        seen.push_str(&String::from_utf8_lossy(&chunk));
+    }
+}
+
 // C-T2: a bridge that cannot spawn yields a clear reason, never a silent blank view.
 #[tokio::test]
 async fn process_terminal_reports_spawn_failure_with_reason() {

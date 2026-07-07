@@ -507,6 +507,9 @@ impl Core {
         Ok(TerminalChannel {
             output: ui_rx,
             input: channel.input,
+            // Geometry updates bypass capture — they go to the attach's PTY, not the
+            // byte stream.
+            resize: channel.resize,
         })
     }
 

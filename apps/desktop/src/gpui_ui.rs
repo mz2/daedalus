@@ -488,6 +488,7 @@ impl AppRoot {
                 .spawn(async move {
                     match app.attach(id).await {
                         Ok(mut channel) => {
+                            let resize = channel.resize.clone();
                             let (tx, rx) = std::sync::mpsc::channel::<Bytes>();
                             tokio::spawn(async move {
                                 while let Some(chunk) = channel.output.recv().await {
@@ -496,7 +497,7 @@ impl AppRoot {
                                     }
                                 }
                             });
-                            Ok(rx)
+                            Ok((rx, resize))
                         }
                         Err(e) => Err(e.to_string()),
                     }
@@ -508,11 +509,24 @@ impl AppRoot {
                     return;
                 }
                 match attached {
-                    Ok(Ok(rx)) => {
+                    Ok(Ok((rx, resize))) => {
                         let reader = ChannelReader::new(rx);
                         let writer = CommandWriter::new(this.app.clone(), this.handle.clone(), id);
                         let config = terminal_config();
-                        let view = cx.new(|cx| TerminalView::new(writer, reader, config, cx));
+                        let view = cx.new(|cx| {
+                            // Keep the attach's PTY in step with the rendered grid — the
+                            // agent sees real winsize changes (SIGWINCH), not a fixed
+                            // 120x40 (issue #15 follow-up). `try_send` from the UI
+                            // thread: stale geometry is superseded, never blocks.
+                            TerminalView::new(writer, reader, config, cx).with_resize_callback(
+                                move |cols, rows| {
+                                    let _ = resize.try_send(daedalus_zellij::TerminalSize {
+                                        cols: cols.min(u16::MAX as usize) as u16,
+                                        rows: rows.min(u16::MAX as usize) as u16,
+                                    });
+                                },
+                            )
+                        });
                         this.terminal = Some(view);
                         this.terminal_error = None;
                     }
