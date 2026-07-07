@@ -30,6 +30,7 @@ daedalus-core = { workspace = true }
 daedalus-backend = { workspace = true }
 daedalus-backend-fake = { workspace = true }
 daedalus-backend-workshop = { workspace = true }
+daedalus-backend-openshell = { workspace = true }
 daedalus-zellij = { workspace = true }
 daedalus-discovery = { workspace = true }
 tokio = { workspace = true }

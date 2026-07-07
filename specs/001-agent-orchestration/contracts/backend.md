@@ -1,7 +1,7 @@
 # Contract: Backend abstraction
 
-**Crate**: `daedalus-backend` (trait) — implemented by `daedalus-backend-{workshop,fake}`; further
-backends integrate existing agent-oriented sandbox runtimes (e.g. NVIDIA OpenShell, issue #9) — Daedalus
+**Crate**: `daedalus-backend` (trait) — implemented by `daedalus-backend-{workshop,openshell,fake}`;
+further backends integrate existing agent-oriented sandbox runtimes (srt #12, CodeRunner #13) — Daedalus
 never implements its own isolation primitives (2026-07-06 amendment).
 **Satisfies**: FR-004, FR-005, FR-002/002a, FR-022/024, FR-027/028, SC-002, SC-013.
 
@@ -53,4 +53,5 @@ pub trait Backend: Send + Sync {
 | Backend | Isolation primitive | Notes |
 |---------|---------------------|-------|
 | `workshop` | Canonical Workshop (Linux) env | exact control surface confirmed during impl (R-WS) |
+| `openshell` | NVIDIA OpenShell kernel sandbox (seccomp/Landlock/netns) | Linux (GPU-capable) + macOS Apple silicon via Docker Desktop, no GPU; per-session YAML policy — worktree mount, deny-outbound, no env passthrough (issue #9) |
 | `fake` | in-process simulation | Principle III local testability; drives all contract tests |

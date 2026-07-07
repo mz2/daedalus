@@ -4,6 +4,7 @@ members = [
     "crates/daedalus-proto",
     "crates/daedalus-backend",
     "crates/daedalus-backend-workshop",
+    "crates/daedalus-backend-openshell",
     "crates/daedalus-backend-fake",
     "crates/daedalus-discovery",
     "crates/daedalus-zellij",
@@ -21,6 +22,7 @@ default-members = [
     "crates/daedalus-proto",
     "crates/daedalus-backend",
     "crates/daedalus-backend-workshop",
+    "crates/daedalus-backend-openshell",
     "crates/daedalus-backend-fake",
     "crates/daedalus-discovery",
     "crates/daedalus-zellij",
@@ -43,6 +45,7 @@ repository = "https://github.com/mz2/daedalus"
 daedalus-proto = { path = "crates/daedalus-proto" }
 daedalus-backend = { path = "crates/daedalus-backend" }
 daedalus-backend-workshop = { path = "crates/daedalus-backend-workshop" }
+daedalus-backend-openshell = { path = "crates/daedalus-backend-openshell" }
 daedalus-backend-fake = { path = "crates/daedalus-backend-fake" }
 daedalus-discovery = { path = "crates/daedalus-discovery" }
 daedalus-zellij = { path = "crates/daedalus-zellij" }

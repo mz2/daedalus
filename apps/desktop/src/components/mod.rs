@@ -122,6 +122,8 @@ impl Chip {
     pub fn backend(kind: BackendKind, availability: Availability, theme: &Theme) -> Self {
         let (icon, label) = match kind {
             BackendKind::Workshop => ("linux", "Workshop"),
+            // Prototype BACKEND_TYPES `openshell` — icon "gpu" (data.js).
+            BackendKind::OpenShell => ("gpu", "OpenShell"),
             BackendKind::Fake => ("backends", "Fake"),
         };
         Self {

@@ -112,3 +112,14 @@ async fn lifecycle_is_identical_on_the_workshop_backend() {
     let (app, dir) = app_for(backend);
     run_lifecycle(&app, BackendKind::Workshop, dir.path()).await;
 }
+
+#[tokio::test]
+async fn lifecycle_is_identical_on_the_openshell_backend() {
+    // Only runs where the openshell CLI + container runtime are ready (SC-008 real-backend leg).
+    let backend = Arc::new(daedalus_backend_openshell::OpenShellBackend::default());
+    if backend.availability().await != daedalus_proto::Availability::Available {
+        return;
+    }
+    let (app, dir) = app_for(backend);
+    run_lifecycle(&app, BackendKind::OpenShell, dir.path()).await;
+}

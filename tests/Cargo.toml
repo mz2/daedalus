@@ -16,6 +16,7 @@ daedalus-proto = { workspace = true }
 daedalus-backend = { workspace = true }
 daedalus-backend-fake = { workspace = true }
 daedalus-backend-workshop = { workspace = true }
+daedalus-backend-openshell = { workspace = true }
 daedalus-discovery = { workspace = true }
 daedalus-zellij = { workspace = true }
 daedalus-sdk = { workspace = true }
@@ -32,6 +33,9 @@ serde_json = { workspace = true }
 [[test]]
 name = "contract_backend"
 path = "contract/backend.rs"
+[[test]]
+name = "contract_openshell_backend"
+path = "contract/openshell_backend.rs"
 [[test]]
 name = "contract_persistence"
 path = "contract/persistence.rs"

@@ -20,13 +20,14 @@ use std::sync::Arc;
 use daedalus_app::App;
 use daedalus_backend::Backend;
 use daedalus_backend_fake::FakeBackend;
+use daedalus_backend_openshell::OpenShellBackend;
 use daedalus_backend_workshop::WorkshopBackend;
 use daedalus_core::{BackendRegistry, Core, CoreConfig, Store};
 use daedalus_discovery::{DiscoveryCoordinator, LocalSource, MdnsSource};
 use daedalus_proto::BackendKind;
 use daedalus_zellij::{InMemoryTerminal, ScriptedLiveTerminal, TerminalAttach};
 
-/// Build the app service wired to all v1 backends (fake + Workshop) over a store at
+/// Build the app service wired to all v1 backends (fake + Workshop + OpenShell) over a store at
 /// `data_dir`. The terminal attach is chosen from the default backend: the `fake` backend
 /// (the local-testing path, Principle III) uses a synthetic *live* terminal so the surface
 /// exercises the real capture pipeline (redact → persist → observe → stream); other backends
@@ -37,6 +38,7 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
     let backends: Vec<Arc<dyn Backend>> = vec![
         Arc::new(FakeBackend::new()),
         Arc::new(WorkshopBackend::default()),
+        Arc::new(OpenShellBackend::default()),
     ];
     let registry = BackendRegistry::new(backends);
     let terminal: Arc<dyn TerminalAttach> = match default_backend_kind() {
@@ -64,6 +66,7 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
 pub fn default_backend_kind() -> BackendKind {
     match std::env::var("DAEDALUS_BACKEND").as_deref() {
         Ok("workshop") => BackendKind::Workshop,
+        Ok("openshell") => BackendKind::OpenShell,
         Ok("fake") | Err(_) => BackendKind::Fake,
         // An explicitly-set but unrecognized value (e.g. `macos`, which has no wired
         // backend yet) silently ran `fake` before — warn so the operator sees why (D7).
