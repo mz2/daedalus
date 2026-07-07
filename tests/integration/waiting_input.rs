@@ -159,7 +159,7 @@ async fn a_waiting_session_is_not_marked_stalled_past_the_stall_interval() {
     );
 
     // Any stall interval has long elapsed; the detector must skip a waiting session.
-    fx.core.set_stall_interval(0);
+    fx.core.set_stall_interval(0).unwrap();
     let mut rx = fx.app.subscribe();
     let status = fx
         .core

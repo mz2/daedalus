@@ -23,6 +23,10 @@ pub enum Command {
     SetIdleRate { backend: BackendKind, rate: Option<f64> }, // FR-021b: per-backend idle
                                                  // rate for waiting-cost estimates;
                                                  // persisted (survives restart); None clears
+    SetConcurrencyLimit(Option<usize>),          // FR-026: max concurrent sessions;
+                                                 // persisted (survives restart); None = unlimited
+    SetStallInterval(u64),                       // FR-020: stall interval (seconds);
+                                                 // persisted (survives restart)
 }
 
 // Queries (read current state)

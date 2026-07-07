@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use daedalus_sdk::parse_task_states;
 
-use daedalus_proto::{AppEvent, SessionId, SessionStatus, TaskId, TaskStatus, TrackedTask};
+use daedalus_proto::{AppEvent, SessionId, TaskId, TaskStatus, TrackedTask};
 
 use crate::session::state::{transition, Trigger};
 use crate::{clock, map_not_found, Core, CoreError, StoreError};
@@ -42,14 +42,14 @@ impl Core {
             }
         }
 
-        // Completion only on all-tasks-done (never agent-exit alone) — FR-015a.
+        // Completion only on all-tasks-done (never agent-exit alone) — FR-015a. The state
+        // machine is the sole arbiter of which statuses may complete: `AllTasksDone` is
+        // legal from every non-terminal attention state (Running, Stalled, WaitingForInput,
+        // AwaitingConfirmation) and rejected from Starting / terminal / Unknown, so a
+        // session that finishes its tasks while waiting still completes and a `Starting`
+        // (or already-terminal) session is left untouched.
         let all_done = !parsed.is_empty() && parsed.iter().all(|t| t.status == TaskStatus::Done);
-        if all_done
-            && matches!(
-                session.status,
-                SessionStatus::Running | SessionStatus::Stalled
-            )
-        {
+        if all_done {
             if let Ok(next) = transition(session.status, Trigger::AllTasksDone) {
                 self.store
                     .set_session_status(id, next, Some(clock::now()), None)?;

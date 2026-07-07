@@ -33,6 +33,35 @@ pub const CONCURRENCY_DESCRIPTION: &str =
 /// The concurrency slider bounds (prototype `input type=range` 1–16).
 pub const CONCURRENCY_RANGE: std::ops::RangeInclusive<usize> = 1..=16;
 
+/// Parse + validate the concurrency-limit input (G2). An empty/blank string means
+/// unlimited (`None`, intended). A non-empty value must parse as a whole number inside
+/// [`CONCURRENCY_RANGE`] (1..=16); anything else — a non-numeric value like `"6x"` or an
+/// out-of-range one like `"0"` — is REJECTED with a stated reason rather than silently
+/// disabling the safety limit (which the old `parse::<usize>().ok()` did by turning both
+/// into `None`).
+///
+/// # Errors
+/// Returns a human-readable message when the input is non-empty but not a whole number in
+/// range.
+pub fn parse_concurrency(input: &str) -> Result<Option<usize>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None); // blank ⇒ unlimited (intended)
+    }
+    let bounds = format!(
+        "between {} and {}",
+        CONCURRENCY_RANGE.start(),
+        CONCURRENCY_RANGE.end()
+    );
+    let n: usize = trimmed
+        .parse()
+        .map_err(|_| format!("Concurrency limit must be a whole number {bounds}."))?;
+    if !CONCURRENCY_RANGE.contains(&n) {
+        return Err(format!("Concurrency limit must be {bounds}."));
+    }
+    Ok(Some(n))
+}
+
 /// The notification toggle labels, in prototype order, with their default states
 /// (Resource pressure ships off).
 pub const NOTIFICATION_DEFAULTS: [(&str, bool); 5] = [
@@ -239,6 +268,24 @@ mod tests {
             CONCURRENCY_DESCRIPTION,
             "New sessions beyond this limit are rejected with a clear message."
         );
+    }
+
+    #[test]
+    fn parse_concurrency_validates_range_and_treats_blank_as_unlimited() {
+        // G2: blank ⇒ unlimited (intended); anything else must be a whole number inside
+        // CONCURRENCY_RANGE, otherwise it is REJECTED rather than silently disabling the
+        // safety limit.
+        assert_eq!(parse_concurrency(""), Ok(None));
+        assert_eq!(parse_concurrency("   "), Ok(None));
+        assert_eq!(parse_concurrency("6"), Ok(Some(6)));
+        assert_eq!(parse_concurrency("1"), Ok(Some(1)));
+        assert_eq!(parse_concurrency("16"), Ok(Some(16)));
+        // "6x" must NOT parse to None (unlimited) — it is rejected.
+        assert!(parse_concurrency("6x").is_err());
+        // "0" is a hard block outside 1..=16 — rejected, not accepted.
+        assert!(parse_concurrency("0").is_err());
+        assert!(parse_concurrency("17").is_err());
+        assert!(parse_concurrency("-1").is_err());
     }
 
     #[test]

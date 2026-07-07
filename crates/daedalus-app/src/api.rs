@@ -48,6 +48,11 @@ pub enum Command {
         /// Currency-per-hour rate; `None` clears it (no cost estimate shown).
         rate: Option<f64>,
     },
+    /// Set (or clear with `None` = unlimited) the maximum concurrent sessions (FR-026);
+    /// persisted so it survives restart.
+    SetConcurrencyLimit(Option<usize>),
+    /// Set the stall interval in seconds (FR-020); persisted so it survives restart.
+    SetStallInterval(u64),
 }
 
 /// The result of a successful [`Command`].

@@ -42,6 +42,51 @@ fn backend_idle_rates_roundtrip_and_survive_reopen() {
 }
 
 #[test]
+fn concurrency_limit_and_stall_interval_survive_core_restart() {
+    // G6+G15: the concurrency limit and stall interval are persisted operator
+    // configuration — like idle rates, they survive a Core rebuild over the same store
+    // (reseeded in `Core::new`).
+    use std::sync::Arc;
+
+    use daedalus_backend::Backend;
+    use daedalus_backend_fake::FakeBackend;
+    use daedalus_core::{BackendRegistry, Core, CoreConfig};
+    use daedalus_zellij::InMemoryTerminal;
+
+    let dir = TempDir::new().unwrap();
+    let build = || {
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let registry = BackendRegistry::new(vec![Arc::new(FakeBackend::new()) as Arc<dyn Backend>]);
+        Core::new(
+            store,
+            registry,
+            Arc::new(InMemoryTerminal::new()),
+            None,
+            CoreConfig::default(),
+        )
+    };
+
+    {
+        let core = build();
+        core.set_concurrency_limit(Some(5)).unwrap();
+        core.set_stall_interval(45).unwrap();
+        let cfg = core.config();
+        assert_eq!(cfg.concurrency_limit, Some(5));
+        assert_eq!(cfg.stall_interval_secs, 45);
+    }
+
+    // Rebuild over the same store: both survive.
+    let core = build();
+    let cfg = core.config();
+    assert_eq!(
+        cfg.concurrency_limit,
+        Some(5),
+        "concurrency limit persisted"
+    );
+    assert_eq!(cfg.stall_interval_secs, 45, "stall interval persisted");
+}
+
+#[test]
 fn tools_roundtrip_and_enforce_unique_names() {
     let dir = TempDir::new().unwrap();
     let store = Store::open(dir.path()).unwrap();
@@ -191,4 +236,147 @@ fn v1_schema_upgrades_in_place_preserving_outcome_reasons() {
     assert_eq!(session.waiting_since, None);
     assert_eq!(session.work_item_ref, None);
     assert_eq!(session.last_known_status, None);
+}
+
+/// P1: an interrupted v1→v2 upgrade leaves some of the new columns already added. Re-running
+/// the migration must not brick `Store::open` on a "duplicate column" error — the ALTER
+/// steps are idempotent and the run finishes the migration.
+#[test]
+fn partially_applied_migration_completes_without_bricking() {
+    let dir = TempDir::new().unwrap();
+    let session_id = SessionId::new();
+    {
+        // v1-shaped sessions table, but with ONE of the v2 columns already added (as if a
+        // previous upgrade was interrupted mid-way), still recorded as schema_version 1.
+        let conn = rusqlite::Connection::open(dir.path().join("daedalus.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 tool_id TEXT NOT NULL,
+                 objective_id TEXT NOT NULL,
+                 environment_id TEXT NOT NULL,
+                 source_id TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 started_at INTEGER,
+                 ended_at INTEGER,
+                 terminal_outcome TEXT,
+                 accepts_input INTEGER NOT NULL,
+                 pending_prompt TEXT
+             );
+             INSERT INTO meta (key, value) VALUES ('schema_version', '1');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, tool_id, objective_id, environment_id, source_id, status, created_at, accepts_input) VALUES (?1,?2,?3,?4,?5,'running',1,1)",
+            (
+                session_id.to_string(),
+                ToolId::new().to_string(),
+                ObjectiveId::new().to_string(),
+                EnvironmentId::new().to_string(),
+                SourceId::new().to_string(),
+            ),
+        )
+        .unwrap();
+    }
+
+    // Re-running the migration must succeed and finish the schema, not error on the
+    // already-present column.
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 3);
+    let session = store.get_session(session_id).unwrap();
+    assert_eq!(session.status, SessionStatus::Running);
+    // The remaining v2 columns were added by the completed migration.
+    assert_eq!(session.waiting_since, None);
+    assert_eq!(session.last_known_status, None);
+}
+
+/// P2: a present-but-unparseable `schema_version` must never be silently treated as the
+/// current version (which would skip migration and leave the DB missing columns). It is a
+/// clear error instead.
+#[test]
+fn unparseable_schema_version_is_an_error_not_silently_current() {
+    let dir = TempDir::new().unwrap();
+    {
+        // v1-shaped sessions table (missing the US6 columns) but with a garbage version.
+        let conn = rusqlite::Connection::open(dir.path().join("daedalus.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 tool_id TEXT NOT NULL,
+                 objective_id TEXT NOT NULL,
+                 environment_id TEXT NOT NULL,
+                 source_id TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 started_at INTEGER,
+                 ended_at INTEGER,
+                 terminal_outcome TEXT,
+                 accepts_input INTEGER NOT NULL
+             );
+             INSERT INTO meta (key, value) VALUES ('schema_version', 'garbage');",
+        )
+        .unwrap();
+    }
+    // Must not silently succeed while leaving the US6 columns unmigrated.
+    assert!(Store::open(dir.path()).is_err());
+}
+
+/// P3: a single undecodable row (bad status token) must be skipped with a warning, not
+/// panic the whole list query and poison the connection mutex.
+#[test]
+fn list_sessions_survives_one_corrupt_row() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+
+    // One good session through the normal path.
+    let good = attention_session();
+    store.upsert_session(&good).unwrap();
+
+    // One corrupt row (invalid status enum token) written directly.
+    let bad_id = SessionId::new();
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("daedalus.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, tool_id, objective_id, environment_id, source_id, status, created_at, accepts_input) VALUES (?1,?2,?3,?4,?5,'bogus_status',7,1)",
+            (
+                bad_id.to_string(),
+                ToolId::new().to_string(),
+                ObjectiveId::new().to_string(),
+                EnvironmentId::new().to_string(),
+                SourceId::new().to_string(),
+            ),
+        )
+        .unwrap();
+    }
+
+    // Does not panic; returns the good row and skips the corrupt one.
+    let sessions = store.list_sessions().unwrap();
+    assert!(sessions.iter().any(|s| s.id == good.id));
+    assert!(sessions.iter().all(|s| s.id != bad_id));
+
+    // Single-row lookups return a decode error (not a panic) for the corrupt row.
+    assert!(store.get_session(bad_id).is_err());
+}
+
+/// D6: deleting a session unlinks its capture `.log` file and resets the line counter, so
+/// no orphaned capture files or stale counters are left behind.
+#[test]
+fn delete_session_removes_capture_file_and_line_counter() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let session = SessionId::new();
+    store
+        .append_output(session, Timestamp::from_millis(1), b"line one\nline two\n")
+        .unwrap();
+    // Initialise the line counter.
+    assert_eq!(store.capture_line_count(session), 2);
+    let capture = dir.path().join("captures").join(format!("{session}.log"));
+    assert!(capture.exists());
+
+    store.delete_session(session).unwrap();
+    assert!(!capture.exists(), "capture .log unlinked on delete");
+    assert_eq!(store.capture_line_count(session), 0, "line counter reset");
 }

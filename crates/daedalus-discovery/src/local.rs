@@ -1,5 +1,7 @@
 //! Local discovery source: enumerate local zellij sessions (FR-010).
 
+use std::sync::Mutex;
+
 use async_trait::async_trait;
 
 use daedalus_proto::{Availability, DiscoveredSession, SessionIdentity, SourceId, SourceKind};
@@ -12,6 +14,12 @@ pub struct LocalSource {
     id: SourceId,
     /// Optional name prefix that marks a zellij session as Daedalus-managed.
     prefix: String,
+    /// Availability recorded by the most recent [`poll`](DiscoverySource::poll): the trait
+    /// exposes `availability()` separately, so we cache the last poll outcome here rather
+    /// than reporting a hardcoded `Available` while an enumeration error was swallowed into
+    /// an empty list (FR-014 — a failed listing must not drop local sessions as "available
+    /// but empty").
+    availability: Mutex<Availability>,
 }
 
 impl Default for LocalSource {
@@ -28,6 +36,7 @@ impl LocalSource {
         Self {
             id: SourceId::new(),
             prefix: daedalus_zellij::SESSION_PREFIX.to_string(),
+            availability: Mutex::new(Availability::Available),
         }
     }
 
@@ -56,19 +65,27 @@ impl DiscoverySource for LocalSource {
 
     async fn poll(&self) -> Vec<DiscoveredSession> {
         match list_local_sessions().await {
-            Ok(names) => names
-                .iter()
-                .filter(|n| n.starts_with(&self.prefix))
-                .map(|n| self.to_discovered(n))
-                .collect(),
-            // zellij missing ⇒ no local sessions; availability() reflects unreachability.
-            Err(_) => Vec::new(),
+            Ok(names) => {
+                *self.availability.lock().expect("poisoned") = Availability::Available;
+                names
+                    .iter()
+                    .filter(|n| n.starts_with(&self.prefix))
+                    .map(|n| self.to_discovered(n))
+                    .collect()
+            }
+            // Enumeration failed: report unreachable so the coordinator retains previously
+            // seen local sessions and marks them unreachable, rather than dropping them as
+            // "available but empty" (FR-014).
+            Err(_) => {
+                *self.availability.lock().expect("poisoned") = Availability::Unavailable;
+                Vec::new()
+            }
         }
     }
 
     fn availability(&self) -> Availability {
-        // Local enumeration is best-effort; treat as available (zellij absence yields an
-        // empty list, which `poll` handles).
-        Availability::Available
+        // Reflect the most recent poll: the coordinator always polls before reading this,
+        // so a swallowed enumeration error surfaces here as Unavailable.
+        *self.availability.lock().expect("poisoned")
     }
 }

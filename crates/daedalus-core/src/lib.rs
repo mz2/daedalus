@@ -171,6 +171,16 @@ impl Core {
                 backends.set_idle_rate(kind, Some(rate));
             }
         }
+        // Re-seed persisted core policy (FR-020/026, G6/G15): a configured concurrency
+        // limit / stall interval overrides the passed default so both survive restart.
+        // An absent key keeps the caller-supplied default.
+        let mut config = config;
+        if let Ok(Some(limit)) = store.concurrency_limit() {
+            config.concurrency_limit = Some(limit);
+        }
+        if let Ok(Some(secs)) = store.stall_interval() {
+            config.stall_interval_secs = secs;
+        }
         Self {
             store,
             backends,
@@ -190,14 +200,20 @@ impl Core {
         self.config.lock().expect("poisoned").clone()
     }
 
-    /// Update the concurrency limit at runtime (FR-026).
-    pub fn set_concurrency_limit(&self, limit: Option<usize>) {
+    /// Update the concurrency limit at runtime (FR-026): applied immediately and persisted
+    /// so it survives restart (G6/G15). `None` = unlimited.
+    pub fn set_concurrency_limit(&self, limit: Option<usize>) -> Result<(), CoreError> {
         self.config.lock().expect("poisoned").concurrency_limit = limit;
+        self.store.set_concurrency_limit(limit)?;
+        Ok(())
     }
 
-    /// Update the stall interval (seconds) at runtime (FR-020).
-    pub fn set_stall_interval(&self, secs: u64) {
+    /// Update the stall interval (seconds) at runtime (FR-020): applied immediately and
+    /// persisted so it survives restart (G6/G15).
+    pub fn set_stall_interval(&self, secs: u64) -> Result<(), CoreError> {
         self.config.lock().expect("poisoned").stall_interval_secs = secs;
+        self.store.set_stall_interval(secs)?;
+        Ok(())
     }
 
     /// Set (or clear) the per-backend idle rate used for waiting-cost estimates

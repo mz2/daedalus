@@ -271,6 +271,9 @@ struct AppRoot {
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     // Deep-link focus for the open session (answer mode, T078); cleared on plain opens.
     session_focus: Option<SessionFocus>,
+    // The last dispatched-command failure, shown as a dismissable banner in the shell
+    // chrome (G1) — set when a command is rejected, cleared on dismiss / next success.
+    last_error: Option<SharedString>,
     focus_handle: FocusHandle,
 }
 
@@ -402,6 +405,7 @@ impl AppRoot {
             pty: None,
             child: None,
             session_focus: None,
+            last_error: None,
             focus_handle: cx.focus_handle(),
         };
         // System is the default theme preference: adopt the OS appearance at launch
@@ -461,13 +465,29 @@ impl AppRoot {
         }
     }
 
-    fn dispatch(&self, command: Command) {
+    /// Dispatch a command, awaiting the result so a rejection is surfaced as a dismissable
+    /// error banner (G1) instead of being swallowed by a fire-and-forget log line.
+    fn dispatch(&self, command: Command, cx: &mut Context<Self>) {
         let app = self.app.clone();
-        self.handle.spawn(async move {
-            if let Err(e) = app.execute(command).await {
-                tracing::warn!("command failed: {e}");
+        let handle = self.handle.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = handle
+                .spawn(async move { app.execute(command).await })
+                .await;
+            let message = match outcome {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(format!("command task failed: {e}")),
+            };
+            if let Some(message) = message {
+                tracing::warn!("command failed: {message}");
+                let _ = this.update(cx, |this, cx| {
+                    this.last_error = Some(SharedString::from(message));
+                    cx.notify();
+                });
             }
-        });
+        })
+        .detach();
     }
 
     fn sample_usage(&self, id: SessionId) {
@@ -507,6 +527,7 @@ impl Render for AppRoot {
             v_flex()
                 .size_full()
                 .child(self.render_title_bar(cx))
+                .children(self.render_error_banner(cx))
                 .child(body)
                 .children(sheet_layer)
                 .children(dialog_layer)
@@ -557,6 +578,36 @@ impl AppRoot {
                             })),
                     ),
             )
+    }
+
+    /// A dismissable error banner shown in the shell chrome when the last dispatched
+    /// command failed (G1). Absent when there is no pending error.
+    fn render_error_banner(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let message = self.last_error.clone()?;
+        let p = self.palette;
+        let accent = col(StatusTone::Failed.color(p.skin));
+        Some(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_3()
+                .px_4()
+                .py_2()
+                .bg(accent.opacity(0.12))
+                .border_b_1()
+                .border_color(accent)
+                .child(div().text_color(accent).child("✕"))
+                .child(div().flex_1().text_sm().child(message))
+                .child(
+                    Button::new("dismiss-error")
+                        .ghost()
+                        .label("Dismiss")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.last_error = None;
+                            cx.notify();
+                        })),
+                ),
+        )
     }
 
     /// The titlebar hosts pill (prototype `HostsIndicator`): one availability dot per
@@ -807,9 +858,30 @@ impl AppRoot {
             backend: self.start_backend,
             limits: daedalus_proto::ResourceLimits::default(),
         };
-        self.dispatch(Command::StartSession(req));
-        self.view = View::Nav(NavItem::Fleet);
-        cx.notify();
+        // Await the start (G1): navigate to Fleet only on success; on failure surface the
+        // stated reason and STAY on the Start form rather than optimistically leaving so a
+        // rejected start looks like it worked.
+        let app = self.app.clone();
+        let handle = self.handle.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = handle
+                .spawn(async move { app.execute(Command::StartSession(req)).await })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match outcome {
+                    Ok(Ok(_)) => {
+                        this.last_error = None;
+                        this.view = View::Nav(NavItem::Fleet);
+                    }
+                    Ok(Err(e)) => this.last_error = Some(SharedString::from(e.to_string())),
+                    Err(e) => {
+                        this.last_error = Some(SharedString::from(format!("start failed: {e}")))
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The Needs-you queue (US6): the dedicated screen, driven by the headless
@@ -917,7 +989,7 @@ impl AppRoot {
                         .primary()
                         .label("Confirm")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dispatch(Command::ConfirmCompletion(id));
+                            this.dispatch(Command::ConfirmCompletion(id), cx);
                             cx.notify();
                         })),
                 );
@@ -930,7 +1002,7 @@ impl AppRoot {
                         .danger()
                         .label("Stop")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dispatch(Command::StopSession(id));
+                            this.dispatch(Command::StopSession(id), cx);
                             cx.notify();
                         })),
                 );
@@ -940,7 +1012,7 @@ impl AppRoot {
                     .ghost()
                     .label("Clean up")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.dispatch(Command::CleanUp(id));
+                        this.dispatch(Command::CleanUp(id), cx);
                         cx.notify();
                     })),
             );
@@ -1031,10 +1103,13 @@ impl AppRoot {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let text = this.input_value(&this.inputs.send, cx);
                         if !text.is_empty() {
-                            this.dispatch(Command::SendInput {
-                                session: id,
-                                data: format!("{text}\n").into_bytes().into(),
-                            });
+                            this.dispatch(
+                                Command::SendInput {
+                                    session: id,
+                                    data: format!("{text}\n").into_bytes().into(),
+                                },
+                                cx,
+                            );
                             this.inputs
                                 .send
                                 .update(cx, |st, cx| st.set_value("", window, cx));
@@ -1153,15 +1228,15 @@ impl AppRoot {
         }
         match control.label.as_str() {
             "Confirm completion" => btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.dispatch(Command::ConfirmCompletion(session));
+                this.dispatch(Command::ConfirmCompletion(session), cx);
                 cx.notify();
             })),
             "Stop" => btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.dispatch(Command::StopSession(session));
+                this.dispatch(Command::StopSession(session), cx);
                 cx.notify();
             })),
             "Clean up" => btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.dispatch(Command::CleanUp(session));
+                this.dispatch(Command::CleanUp(session), cx);
                 this.close_terminal();
                 this.view = View::Nav(NavItem::Fleet);
                 cx.notify();
@@ -1415,7 +1490,7 @@ impl AppRoot {
                         .primary()
                         .label("Connect")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dispatch(Command::ConnectDiscovered(did.clone()));
+                            this.dispatch(Command::ConnectDiscovered(did.clone()), cx);
                             cx.notify();
                         })),
                 );
@@ -1529,18 +1604,21 @@ impl AppRoot {
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        self.dispatch(Command::RegisterTool(ToolDef {
-            name,
-            invocation: InvocationSpec {
-                program,
-                args,
-                env: Vec::new(),
-            },
-            capabilities: Capabilities {
-                accepts_interactive_input: self.tool_accepts_input,
-                prompt_convention: None,
-            },
-        }));
+        self.dispatch(
+            Command::RegisterTool(ToolDef {
+                name,
+                invocation: InvocationSpec {
+                    program,
+                    args,
+                    env: Vec::new(),
+                },
+                capabilities: Capabilities {
+                    accepts_interactive_input: self.tool_accepts_input,
+                    prompt_convention: None,
+                },
+            }),
+            cx,
+        );
         for e in [
             &self.inputs.tool_name,
             &self.inputs.tool_program,
@@ -1614,17 +1692,24 @@ impl AppRoot {
                         .primary()
                         .label("Save")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            let limit = this.input_value(&this.inputs.concurrency, cx);
-                            let limit = if limit.is_empty() {
-                                None
-                            } else {
-                                limit.parse::<usize>().ok()
+                            // Concurrency: validate first (G2) — reject a non-numeric or
+                            // out-of-range value rather than silently disabling the limit.
+                            let raw = this.input_value(&this.inputs.concurrency, cx);
+                            let limit = match crate::screens::settings::parse_concurrency(&raw) {
+                                Ok(limit) => limit,
+                                Err(msg) => {
+                                    this.last_error = Some(SharedString::from(msg));
+                                    cx.notify();
+                                    return; // leave the existing limit untouched
+                                }
                             };
-                            this.app.core().set_concurrency_limit(limit);
+                            this.last_error = None;
+                            // Persist via the command path (G6/G15) so both survive restart.
+                            this.dispatch(Command::SetConcurrencyLimit(limit), cx);
                             if let Ok(secs) =
                                 this.input_value(&this.inputs.stall, cx).parse::<u64>()
                             {
-                                this.app.core().set_stall_interval(secs);
+                                this.dispatch(Command::SetStallInterval(secs), cx);
                             }
                             // Idle rate: persisted via the command path (FR-021b).
                             let rate = this.input_value(&this.inputs.idle_rate, cx);
@@ -1634,10 +1719,13 @@ impl AppRoot {
                                 rate.parse::<f64>().ok().map(Some)
                             };
                             if let Some(rate) = rate {
-                                this.dispatch(Command::SetIdleRate {
-                                    backend: idle_backend,
-                                    rate,
-                                });
+                                this.dispatch(
+                                    Command::SetIdleRate {
+                                        backend: idle_backend,
+                                        rate,
+                                    },
+                                    cx,
+                                );
                             }
                             cx.notify();
                         })),

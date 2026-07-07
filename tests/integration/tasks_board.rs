@@ -13,6 +13,64 @@ use daedalus_proto::{
 };
 use daedalus_tests::Fixture;
 
+/// S1 regression: a session that finishes all its tasks while blocked on the operator
+/// (WaitingForInput) must still complete — the board hands the decision to the state
+/// machine, which allows `(WaitingForInput, AllTasksDone) => Completed` (FR-015a).
+#[tokio::test]
+async fn all_tasks_done_completes_a_waiting_for_input_session() {
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let req = fx.fresh_request(tool);
+    let objective = req.objective.clone();
+    fx.write_tasks(&objective, "- [x] T001 Setup\n- [ ] T002 Implement\n");
+    let id = fx.core.start_session(req).await.unwrap();
+    fx.core.refresh_task_board(id).unwrap();
+
+    // The agent blocks on a question: the session enters WaitingForInput.
+    fx.core
+        .mark_waiting_for_input(id, "Continue? (y/n)")
+        .unwrap();
+    assert_eq!(
+        fx.app.session(id).unwrap().session.status,
+        SessionStatus::WaitingForInput
+    );
+
+    // The remaining task is now ticked off in tasks.md while still waiting.
+    fx.write_tasks(&objective, "- [x] T001 Setup\n- [x] T002 Implement\n");
+    fx.core.refresh_task_board(id).unwrap();
+
+    assert_eq!(
+        fx.app.session(id).unwrap().session.status,
+        SessionStatus::Completed,
+        "all-tasks-done completes even from WaitingForInput"
+    );
+}
+
+/// A `Starting` session with an all-done board must NOT be spuriously completed: the state
+/// machine rejects `(Starting, AllTasksDone)`, so the board leaves it untouched.
+#[tokio::test]
+async fn all_tasks_done_does_not_complete_a_starting_session() {
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let req = fx.fresh_request(tool);
+    let objective = req.objective.clone();
+    fx.write_tasks(&objective, "- [x] T001 Setup\n- [x] T002 Implement\n");
+    let id = fx.core.start_session(req).await.unwrap();
+
+    // Force the session back to the transient Starting state.
+    fx.core
+        .store()
+        .set_session_status(id, SessionStatus::Starting, None, None)
+        .unwrap();
+
+    fx.core.refresh_task_board(id).unwrap();
+    assert_eq!(
+        fx.app.session(id).unwrap().session.status,
+        SessionStatus::Starting,
+        "a Starting session is never completed by the board"
+    );
+}
+
 /// Two sessions with distinct tools and boards: `claude` working T001/T002 (in progress /
 /// todo) and `goose` with T001 done + T002 blocked.
 async fn two_sessions(fx: &Fixture) -> (SessionId, SessionId) {

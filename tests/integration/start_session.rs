@@ -56,6 +56,41 @@ async fn as4_unprovisionable_fails_cleanly_with_no_orphan() {
     assert_eq!(fx.backend.live_environment_count(), 0);
 }
 
+/// D2(a) regression: a store/persist failure AFTER a successful `acquire` must still tear
+/// the environment down — a `?`-return from any of the post-acquire upserts previously
+/// leaked the acquired environment (C-B2, mirrors AS4). We force the persist error by
+/// making the store directory read-only, so the first post-acquire write (the journal it
+/// needs) fails while `acquire` (in-memory) has already succeeded.
+#[cfg(unix)]
+#[tokio::test]
+async fn persist_failure_after_acquire_leaves_no_orphan() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+
+    // Make the store's SQLite directory read-only: writes now fail (rollback journal can no
+    // longer be created), but reads and the in-memory backend `acquire` still work.
+    let db_dir = fx.dir.path().to_path_buf();
+    std::fs::set_permissions(&db_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = fx.core.start_session(fx.fresh_request(tool)).await;
+
+    // Restore permissions so the temp dir can be cleaned up regardless of the outcome.
+    std::fs::set_permissions(&db_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(result.is_err(), "the persist failure surfaces as an error");
+    assert!(
+        fx.app.fleet().is_empty(),
+        "no session record survives the failed start"
+    );
+    assert_eq!(
+        fx.backend.live_environment_count(),
+        0,
+        "the acquired environment is torn down — no orphan (C-B2)"
+    );
+}
+
 #[tokio::test]
 async fn preexisting_without_worktree_is_rejected() {
     let fx = Fixture::new();

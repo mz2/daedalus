@@ -37,6 +37,43 @@ pub enum StoreError {
     /// A referenced row was not found.
     #[error("not found")]
     NotFound,
+    /// The recorded schema version is present but not a valid version number — the store
+    /// refuses to open rather than silently skip migrations (P2).
+    #[error("unrecognized schema version: {0:?}")]
+    CorruptSchemaVersion(String),
+    /// A stored row could not be decoded (e.g. an unparseable id or enum token).
+    #[error("row decode error: {0}")]
+    Decode(String),
+}
+
+/// Parse a persisted UUID string, mapping a malformed value onto [`StoreError::Decode`]
+/// instead of panicking (P3 resilience).
+fn parse_uuid<T>(s: &str) -> Result<T, StoreError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    s.parse()
+        .map_err(|e| StoreError::Decode(format!("invalid uuid {s:?}: {e}")))
+}
+
+/// Collect a `query_map` of fallibly-decoded rows, skipping (with a warning) any single row
+/// that fails to decode rather than failing — and poisoning the connection for — the whole
+/// list query (P3). The `rusqlite` layer is still propagated (a genuine I/O/step failure).
+fn collect_lenient<T>(
+    rows: impl Iterator<Item = Result<Result<T, StoreError>, rusqlite::Error>>,
+    what: &str,
+) -> Result<Vec<T>, StoreError> {
+    let mut out = Vec::new();
+    for row in rows {
+        match row? {
+            Ok(value) => out.push(value),
+            Err(err) => {
+                tracing::warn!(target: "daedalus::persist", %err, "skipping undecodable {what} row")
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The current schema version (bumped when migrations change).
@@ -215,10 +252,14 @@ impl Store {
 
     fn migrate(&self) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");
+        // The whole sequence — the schema batch, every ALTER/UPDATE step, and the final
+        // version write — runs in ONE transaction so an interrupted upgrade rolls back
+        // atomically and the recorded version can never drift from the actual schema (P1).
+        let tx = conn.unchecked_transaction()?;
         // `CREATE ... IF NOT EXISTS` throughout: on an existing database this only fills
         // in missing tables, so the version recorded *before* this run is still readable.
-        conn.execute_batch(SCHEMA)?;
-        let recorded: Option<String> = conn
+        tx.execute_batch(SCHEMA)?;
+        let recorded: Option<String> = tx
             .query_row(
                 "SELECT value FROM meta WHERE key = 'schema_version'",
                 [],
@@ -229,21 +270,40 @@ impl Store {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None), // fresh database
                 other => Err(other),
             })?;
-        // A fresh database (or an unreadable record) starts at the current version — the
-        // schema batch above already created every table in its final shape.
-        let recorded: i64 = recorded
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(SCHEMA_VERSION);
-        if (1..SCHEMA_VERSION).contains(&recorded) {
-            for v in recorded..SCHEMA_VERSION {
-                Self::MIGRATIONS[(v - 1) as usize](&conn)?;
+        // A fresh database starts at the current version — the schema batch above already
+        // created every table in its final shape. A present-but-unparseable version is a
+        // hard error rather than a silent "already current" that would skip migrations and
+        // leave the store missing columns (P2).
+        let recorded: Option<i64> = match recorded {
+            None => None,
+            Some(v) => Some(v.parse().map_err(|_| StoreError::CorruptSchemaVersion(v))?),
+        };
+        if let Some(recorded) = recorded {
+            if (1..SCHEMA_VERSION).contains(&recorded) {
+                for v in recorded..SCHEMA_VERSION {
+                    Self::MIGRATIONS[(v - 1) as usize](&tx)?;
+                }
             }
         }
-        conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
             [SCHEMA_VERSION.to_string()],
         )?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Whether `table` already has a column named `column` (used to make the `ALTER TABLE
+    /// ADD COLUMN` migration steps idempotent after a partially-applied upgrade — P1).
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, StoreError> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// v1 → v2: add the US6 waiting/attention columns and wrap the plain-text
@@ -255,7 +315,12 @@ impl Store {
             "work_item_ref TEXT",
             "last_known_status TEXT",
         ] {
-            conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), [])?;
+            // Idempotent: a partially-applied upgrade may already have added this column, so
+            // skip it rather than failing on a "duplicate column" error (P1).
+            let name = column.split_whitespace().next().expect("column name");
+            if !Self::column_exists(conn, "sessions", name)? {
+                conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), [])?;
+            }
         }
 
         let reasons: Vec<(String, String)> = {
@@ -336,6 +401,62 @@ impl Store {
         Ok(out)
     }
 
+    /// Set (or clear with `None` = unlimited) the persisted concurrency limit (FR-026,
+    /// G6/G15). Configuration survives restart; `None` deletes the key so the reseed keeps
+    /// the process default.
+    pub fn set_concurrency_limit(&self, limit: Option<usize>) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        match limit {
+            Some(limit) => {
+                conn.execute(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES ('concurrency_limit', ?1)",
+                    [limit.to_string()],
+                )?;
+            }
+            None => {
+                conn.execute("DELETE FROM config WHERE key = 'concurrency_limit'", [])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The persisted concurrency limit, if one is configured (`None` = not set / unlimited).
+    pub fn concurrency_limit(&self) -> Result<Option<usize>, StoreError> {
+        self.config_value("concurrency_limit")
+    }
+
+    /// Set the persisted stall interval in seconds (FR-020, G6/G15). Survives restart.
+    pub fn set_stall_interval(&self, secs: u64) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES ('stall_interval_secs', ?1)",
+            [secs.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The persisted stall interval in seconds, if configured.
+    pub fn stall_interval(&self) -> Result<Option<u64>, StoreError> {
+        self.config_value("stall_interval_secs")
+    }
+
+    /// Read a single scalar `config` value, parsed from its stored text; `None` when the
+    /// key is absent or the stored value fails to parse (a malformed value never breaks the
+    /// reseed on startup).
+    fn config_value<T: std::str::FromStr>(&self, key: &str) -> Result<Option<T>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM config WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(raw.and_then(|v| v.parse().ok()))
+    }
+
     // ----- Tools -----
 
     /// Insert (or replace) a registered tool.
@@ -371,7 +492,7 @@ impl Store {
             [id.to_string()],
             |r| Ok(row_to_tool(id, r)),
         )
-        .map_err(not_found)
+        .map_err(not_found)?
     }
 
     /// List all registered tools.
@@ -379,12 +500,8 @@ impl Store {
         let conn = self.conn.lock().expect("poisoned");
         let mut stmt = conn
             .prepare_cached("SELECT name, invocation, capabilities, id FROM tools ORDER BY name")?;
-        let rows = stmt.query_map([], |r| {
-            // The id is deliberately the LAST column so the shared row mapping applies.
-            let id = ToolId::from_uuid(r.get::<_, String>(3)?.parse().expect("uuid"));
-            Ok(row_to_tool(id, r))
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let rows = stmt.query_map([], |r| Ok(list_row_to_tool(r)))?;
+        collect_lenient(rows, "tool")
     }
 
     // ----- Objectives / backends / sources / environments -----
@@ -484,7 +601,7 @@ impl Store {
             [id.to_string()],
             |r| Ok(row_to_environment(id, r)),
         )
-        .map_err(not_found)
+        .map_err(not_found)?
     }
 
     /// List every environment record (§6.7 — the Environments screen).
@@ -493,12 +610,8 @@ impl Store {
         let mut stmt = conn.prepare_cached(
             "SELECT backend_id, origin, worktree, lifecycle, id FROM environments",
         )?;
-        let rows = stmt.query_map([], |r| {
-            // The id is deliberately the LAST column so the shared row mapping applies.
-            let id = EnvironmentId::from_uuid(r.get::<_, String>(4)?.parse().expect("uuid"));
-            Ok(row_to_environment(id, r))
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let rows = stmt.query_map([], |r| Ok(list_row_to_environment(r)))?;
+        collect_lenient(rows, "environment")
     }
 
     /// Update an environment's lifecycle.
@@ -561,7 +674,7 @@ impl Store {
             [id.to_string()],
             |r| Ok(row_to_session(id, r)),
         )
-        .map_err(not_found)
+        .map_err(not_found)?
     }
 
     /// List all sessions, newest first.
@@ -570,12 +683,8 @@ impl Store {
         let mut stmt = conn.prepare_cached(
             "SELECT tool_id, objective_id, environment_id, source_id, status, created_at, started_at, ended_at, terminal_outcome, accepts_input, pending_prompt, waiting_since, work_item_ref, last_known_status, id FROM sessions ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map([], |r| {
-            // The id is deliberately the LAST column so the shared row mapping applies.
-            let id = SessionId::from_uuid(r.get::<_, String>(14)?.parse().expect("uuid"));
-            Ok(row_to_session(id, r))
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let rows = stmt.query_map([], |r| Ok(list_row_to_session(r)))?;
+        collect_lenient(rows, "session")
     }
 
     /// Update a session's status (and optionally a reason/end timestamp). A `reason` is
@@ -609,6 +718,64 @@ impl Store {
                 outcome.map(serde_json::to_string).transpose()?,
             ),
         )?;
+        Ok(())
+    }
+
+    /// Transition a session's lifecycle atomically: write the status (+ optional
+    /// `ended_at`/`outcome`) AND normalize the waiting/attention columns and
+    /// `terminal_outcome` from the TARGET status, all in one statement so a concurrent
+    /// reader never observes a torn intermediate state (P4).
+    ///
+    /// The waiting columns are derived from `status` — subsuming S2 (any exit out of a
+    /// waiting state clears them) and keeping future exits correct:
+    /// - `WaitingForInput` ⇒ `pending_prompt = prompt`, `waiting_since = waiting_since`
+    /// - `AwaitingConfirmation` ⇒ prompt cleared, `waiting_since = waiting_since` (anchor)
+    /// - any other status ⇒ both cleared to `NULL`
+    ///
+    /// `terminal_outcome` is cleared when transitioning to a live/non-outcome state
+    /// (`Running`/`Starting`, so a stale stall reason never lingers — P6) and otherwise
+    /// `COALESCE`d with any passed `outcome` (preserving outcomes for terminal/stalled
+    /// states; `None` keeps the existing one).
+    pub fn set_session_state(
+        &self,
+        id: SessionId,
+        status: SessionStatus,
+        ended_at: Option<Timestamp>,
+        outcome: Option<&Outcome>,
+        prompt: Option<&str>,
+        waiting_since: Option<Timestamp>,
+    ) -> Result<(), StoreError> {
+        let (prompt, waiting_since): (Option<&str>, Option<Timestamp>) = match status {
+            SessionStatus::WaitingForInput => (prompt, waiting_since),
+            SessionStatus::AwaitingConfirmation => (None, waiting_since),
+            _ => (None, None),
+        };
+        let clears_outcome = matches!(status, SessionStatus::Running | SessionStatus::Starting);
+        let conn = self.conn.lock().expect("poisoned");
+        if clears_outcome {
+            conn.execute(
+                "UPDATE sessions SET status = ?2, ended_at = COALESCE(?3, ended_at), terminal_outcome = NULL, pending_prompt = ?4, waiting_since = ?5 WHERE id = ?1",
+                (
+                    id.to_string(),
+                    enum_to_text(&status)?,
+                    ended_at.map(|t| t.millis()),
+                    prompt,
+                    waiting_since.map(|t| t.millis()),
+                ),
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE sessions SET status = ?2, ended_at = COALESCE(?3, ended_at), terminal_outcome = COALESCE(?4, terminal_outcome), pending_prompt = ?5, waiting_since = ?6 WHERE id = ?1",
+                (
+                    id.to_string(),
+                    enum_to_text(&status)?,
+                    ended_at.map(|t| t.millis()),
+                    outcome.map(serde_json::to_string).transpose()?,
+                    prompt,
+                    waiting_since.map(|t| t.millis()),
+                ),
+            )?;
+        }
         Ok(())
     }
 
@@ -666,6 +833,15 @@ impl Store {
         conn.execute("DELETE FROM events WHERE session_id = ?1", [&sid])?;
         conn.execute("DELETE FROM metrics WHERE session_id = ?1", [&sid])?;
         conn.execute("DELETE FROM sessions WHERE id = ?1", [&sid])?;
+        drop(conn);
+        // Also drop the on-disk capture file and its line-counter entry, so no orphaned
+        // `.log` or stale counter survives the delete (D6).
+        match std::fs::remove_file(self.capture_path(id)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.capture_lines.lock().expect("poisoned").remove(&id);
         Ok(())
     }
 
@@ -694,15 +870,17 @@ impl Store {
             "SELECT task_id, description, status, updated_at FROM tasks WHERE session_id = ?1 ORDER BY task_id",
         )?;
         let rows = stmt.query_map([session.to_string()], |r| {
-            Ok(TrackedTask {
-                id: TaskId::new(r.get::<_, String>(0)?),
-                session_id: session,
-                description: r.get(1)?,
-                status: text_to_enum::<TaskStatus>(&r.get::<_, String>(2)?).expect("status"),
-                updated_at: Timestamp::from_millis(r.get(3)?),
-            })
+            Ok((|| -> Result<TrackedTask, StoreError> {
+                Ok(TrackedTask {
+                    id: TaskId::new(r.get::<_, String>(0)?),
+                    session_id: session,
+                    description: r.get(1)?,
+                    status: text_to_enum::<TaskStatus>(&r.get::<_, String>(2)?)?,
+                    updated_at: Timestamp::from_millis(r.get(3)?),
+                })
+            })())
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        collect_lenient(rows, "task")
     }
 
     // ----- Events + capture files -----
@@ -818,7 +996,7 @@ impl Store {
             "SELECT id, timestamp, kind, payload FROM events WHERE session_id = ?1 ORDER BY timestamp, rowid",
         )?;
         let rows = stmt.query_map([session.to_string()], |r| Ok(row_to_event(session, r)))?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        collect_lenient(rows, "event")
     }
 
     /// The newest `limit` non-`Output` events of a session, oldest first — the session
@@ -841,7 +1019,7 @@ impl Store {
             ),
             |r| Ok(row_to_event(session, r)),
         )?;
-        let mut events: Vec<EventRecord> = rows.collect::<Result<_, _>>()?;
+        let mut events = collect_lenient(rows, "event")?;
         events.reverse(); // newest-first query → oldest-first timeline
         Ok(events)
     }
@@ -863,8 +1041,9 @@ impl Store {
         .map(Some)
         .or_else(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other.into()),
+            other => Err(StoreError::from(other)),
         })
+        .and_then(|opt| opt.transpose())
     }
 
     // ----- Metrics -----
@@ -894,14 +1073,16 @@ impl Store {
             "SELECT metric, value, timestamp FROM metrics m WHERE session_id = ?1 AND timestamp = (SELECT MAX(timestamp) FROM metrics WHERE session_id = m.session_id AND metric = m.metric) GROUP BY metric",
         )?;
         let rows = stmt.query_map([session.to_string()], |r| {
-            Ok(ResourceUsageMetric {
-                session_id: session,
-                metric: text_to_enum::<MetricKind>(&r.get::<_, String>(0)?).expect("metric"),
-                value: r.get(1)?,
-                timestamp: Timestamp::from_millis(r.get(2)?),
-            })
+            Ok((|| -> Result<ResourceUsageMetric, StoreError> {
+                Ok(ResourceUsageMetric {
+                    session_id: session,
+                    metric: text_to_enum::<MetricKind>(&r.get::<_, String>(0)?)?,
+                    value: r.get(1)?,
+                    timestamp: Timestamp::from_millis(r.get(2)?),
+                })
+            })())
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        collect_lenient(rows, "metric")
     }
 
     /// The most recent `limit` samples of one metric for a session, oldest → newest —
@@ -933,82 +1114,84 @@ impl Store {
     }
 }
 
-fn row_to_event(session: SessionId, r: &rusqlite::Row<'_>) -> EventRecord {
-    EventRecord {
-        id: EventId::from_uuid(r.get::<_, String>(0).expect("col").parse().expect("uuid")),
+fn row_to_event(session: SessionId, r: &rusqlite::Row<'_>) -> Result<EventRecord, StoreError> {
+    Ok(EventRecord {
+        id: EventId::from_uuid(parse_uuid(&r.get::<_, String>(0)?)?),
         session_id: session,
-        timestamp: Timestamp::from_millis(r.get(1).expect("col")),
-        kind: text_to_enum::<EventKind>(&r.get::<_, String>(2).expect("col")).expect("kind"),
-        payload: serde_json::from_str(&r.get::<_, String>(3).expect("col")).expect("payload json"),
-    }
+        timestamp: Timestamp::from_millis(r.get(1)?),
+        kind: text_to_enum::<EventKind>(&r.get::<_, String>(2)?)?,
+        payload: serde_json::from_str(&r.get::<_, String>(3)?)?,
+    })
 }
 
-fn row_to_tool(id: ToolId, r: &rusqlite::Row<'_>) -> AgenticTool {
-    AgenticTool {
-        id,
-        name: r.get(0).expect("col"),
-        invocation: serde_json::from_str(&r.get::<_, String>(1).expect("col"))
-            .expect("valid invocation json"),
-        capabilities: serde_json::from_str(&r.get::<_, String>(2).expect("col"))
-            .expect("valid capabilities json"),
-    }
+/// List-query variant of [`row_to_tool`]: the id is the LAST column (index 3).
+fn list_row_to_tool(r: &rusqlite::Row<'_>) -> Result<AgenticTool, StoreError> {
+    let id = ToolId::from_uuid(parse_uuid(&r.get::<_, String>(3)?)?);
+    row_to_tool(id, r)
 }
 
-fn row_to_environment(id: EnvironmentId, r: &rusqlite::Row<'_>) -> SandboxEnvironment {
-    SandboxEnvironment {
+/// List-query variant of [`row_to_environment`]: the id is the LAST column (index 4).
+fn list_row_to_environment(r: &rusqlite::Row<'_>) -> Result<SandboxEnvironment, StoreError> {
+    let id = EnvironmentId::from_uuid(parse_uuid(&r.get::<_, String>(4)?)?);
+    row_to_environment(id, r)
+}
+
+/// List-query variant of [`row_to_session`]: the id is the LAST column (index 14).
+fn list_row_to_session(r: &rusqlite::Row<'_>) -> Result<Session, StoreError> {
+    let id = SessionId::from_uuid(parse_uuid(&r.get::<_, String>(14)?)?);
+    row_to_session(id, r)
+}
+
+fn row_to_tool(id: ToolId, r: &rusqlite::Row<'_>) -> Result<AgenticTool, StoreError> {
+    Ok(AgenticTool {
         id,
-        backend_id: BackendId::from_uuid(
-            r.get::<_, String>(0).expect("col").parse().expect("uuid"),
-        ),
-        origin: text_to_enum::<Origin>(&r.get::<_, String>(1).expect("col")).expect("origin"),
+        name: r.get(0)?,
+        invocation: serde_json::from_str(&r.get::<_, String>(1)?)?,
+        capabilities: serde_json::from_str(&r.get::<_, String>(2)?)?,
+    })
+}
+
+fn row_to_environment(
+    id: EnvironmentId,
+    r: &rusqlite::Row<'_>,
+) -> Result<SandboxEnvironment, StoreError> {
+    Ok(SandboxEnvironment {
+        id,
+        backend_id: BackendId::from_uuid(parse_uuid(&r.get::<_, String>(0)?)?),
+        origin: text_to_enum::<Origin>(&r.get::<_, String>(1)?)?,
         worktree_ref: r
-            .get::<_, Option<String>>(2)
-            .expect("col")
-            .map(|w| serde_json::from_str::<WorktreeRef>(&w).expect("worktree json")),
-        lifecycle: text_to_enum::<EnvLifecycle>(&r.get::<_, String>(3).expect("col"))
-            .expect("lifecycle"),
-    }
+            .get::<_, Option<String>>(2)?
+            .map(|w| serde_json::from_str::<WorktreeRef>(&w))
+            .transpose()?,
+        lifecycle: text_to_enum::<EnvLifecycle>(&r.get::<_, String>(3)?)?,
+    })
 }
 
-fn row_to_session(id: SessionId, r: &rusqlite::Row<'_>) -> Session {
-    Session {
+fn row_to_session(id: SessionId, r: &rusqlite::Row<'_>) -> Result<Session, StoreError> {
+    Ok(Session {
         id,
-        tool_id: ToolId::from_uuid(r.get::<_, String>(0).expect("col").parse().expect("uuid")),
-        objective_id: ObjectiveId::from_uuid(
-            r.get::<_, String>(1).expect("col").parse().expect("uuid"),
-        ),
-        environment_id: EnvironmentId::from_uuid(
-            r.get::<_, String>(2).expect("col").parse().expect("uuid"),
-        ),
-        source_id: SourceId::from_uuid(r.get::<_, String>(3).expect("col").parse().expect("uuid")),
-        status: text_to_enum::<SessionStatus>(&r.get::<_, String>(4).expect("col"))
-            .expect("status"),
-        created_at: Timestamp::from_millis(r.get(5).expect("col")),
-        started_at: r
-            .get::<_, Option<i64>>(6)
-            .expect("col")
-            .map(Timestamp::from_millis),
-        ended_at: r
-            .get::<_, Option<i64>>(7)
-            .expect("col")
-            .map(Timestamp::from_millis),
+        tool_id: ToolId::from_uuid(parse_uuid(&r.get::<_, String>(0)?)?),
+        objective_id: ObjectiveId::from_uuid(parse_uuid(&r.get::<_, String>(1)?)?),
+        environment_id: EnvironmentId::from_uuid(parse_uuid(&r.get::<_, String>(2)?)?),
+        source_id: SourceId::from_uuid(parse_uuid(&r.get::<_, String>(3)?)?),
+        status: text_to_enum::<SessionStatus>(&r.get::<_, String>(4)?)?,
+        created_at: Timestamp::from_millis(r.get(5)?),
+        started_at: r.get::<_, Option<i64>>(6)?.map(Timestamp::from_millis),
+        ended_at: r.get::<_, Option<i64>>(7)?.map(Timestamp::from_millis),
         terminal_outcome: r
-            .get::<_, Option<String>>(8)
-            .expect("col")
-            .map(|o| serde_json::from_str::<Outcome>(&o).expect("outcome json")),
-        accepts_input: r.get::<_, i64>(9).expect("col") != 0,
-        pending_prompt: r.get(10).expect("col"),
-        waiting_since: r
-            .get::<_, Option<i64>>(11)
-            .expect("col")
-            .map(Timestamp::from_millis),
+            .get::<_, Option<String>>(8)?
+            .map(|o| serde_json::from_str::<Outcome>(&o))
+            .transpose()?,
+        accepts_input: r.get::<_, i64>(9)? != 0,
+        pending_prompt: r.get(10)?,
+        waiting_since: r.get::<_, Option<i64>>(11)?.map(Timestamp::from_millis),
         work_item_ref: r
-            .get::<_, Option<String>>(12)
-            .expect("col")
-            .map(|w| serde_json::from_str::<WorkItemRef>(&w).expect("work item json")),
+            .get::<_, Option<String>>(12)?
+            .map(|w| serde_json::from_str::<WorkItemRef>(&w))
+            .transpose()?,
         last_known_status: r
-            .get::<_, Option<String>>(13)
-            .expect("col")
-            .map(|s| text_to_enum::<SessionStatus>(&s).expect("status")),
-    }
+            .get::<_, Option<String>>(13)?
+            .map(|s| text_to_enum::<SessionStatus>(&s))
+            .transpose()?,
+    })
 }

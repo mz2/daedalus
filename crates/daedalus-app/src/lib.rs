@@ -77,6 +77,14 @@ impl App {
                 self.core.set_idle_rate(backend, rate)?;
                 Ok(CommandResult::Done)
             }
+            Command::SetConcurrencyLimit(limit) => {
+                self.core.set_concurrency_limit(limit)?;
+                Ok(CommandResult::Done)
+            }
+            Command::SetStallInterval(secs) => {
+                self.core.set_stall_interval(secs)?;
+                Ok(CommandResult::Done)
+            }
         }
     }
 }

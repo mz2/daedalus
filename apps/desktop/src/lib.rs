@@ -58,6 +58,12 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
 pub fn default_backend_kind() -> BackendKind {
     match std::env::var("DAEDALUS_BACKEND").as_deref() {
         Ok("workshop") => BackendKind::Workshop,
-        _ => BackendKind::Fake,
+        Ok("fake") | Err(_) => BackendKind::Fake,
+        // An explicitly-set but unrecognized value (e.g. `macos`, which has no wired
+        // backend yet) silently ran `fake` before — warn so the operator sees why (D7).
+        Ok(other) => {
+            tracing::warn!("DAEDALUS_BACKEND=\"{other}\" is not a recognized backend; using fake");
+            BackendKind::Fake
+        }
     }
 }

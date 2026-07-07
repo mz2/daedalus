@@ -87,10 +87,24 @@ pub struct TaskRow {
 pub struct TelemetryRow {
     /// Metric label.
     pub label: String,
-    /// Meter (value/max).
-    pub meter: Meter,
+    /// Meter (value/max), or `None` when no meaningful ceiling is known — then the row is
+    /// a plain value readout instead of an always-full bar (G3).
+    pub meter: Option<Meter>,
     /// Human value text.
     pub value_text: String,
+}
+
+/// The meter for a telemetry metric, or `None` when no meaningful ceiling is known so the
+/// row renders as a plain value readout rather than an always-full bar (G3). CPU is a
+/// percentage (0–100); memory/disk/time carry no ceiling in the view-model (environment
+/// [`daedalus_proto::ResourceLimits`] are not surfaced on the session/environment here), so
+/// they have no fraction bar.
+#[must_use]
+fn telemetry_meter(metric: MetricKind, value: f64) -> Option<Meter> {
+    match metric {
+        MetricKind::Cpu => Some(Meter { value, max: 100.0 }),
+        MetricKind::Memory | MetricKind::Disk | MetricKind::Time => None,
+    }
 }
 
 /// Human-readable bytes (metrics carry memory/disk in bytes).
@@ -382,10 +396,7 @@ impl SessionView {
             .iter()
             .map(|m| TelemetryRow {
                 label: format!("{:?}", m.metric),
-                meter: Meter {
-                    value: m.value,
-                    max: m.value.max(1.0),
-                },
+                meter: telemetry_meter(m.metric, m.value),
                 value_text: format!("{:.0}", m.value),
             })
             .collect();
@@ -621,10 +632,9 @@ impl SessionView {
                 },
                 disk: TelemetryRow {
                     label: "Disk".to_string(),
-                    meter: Meter {
-                        value: disk.unwrap_or(0.0),
-                        max: disk.unwrap_or(0.0).max(1.0),
-                    },
+                    // Disk is bytes with no known ceiling here — a value readout, not an
+                    // always-full bar (G3).
+                    meter: telemetry_meter(MetricKind::Disk, disk.unwrap_or(0.0)),
                     value_text: disk.map_or_else(|| "—".to_string(), human_bytes),
                 },
                 runtime_label: if ended { "Ran for" } else { "Runtime" },
@@ -851,6 +861,21 @@ mod tests {
         assert!(plain.focus_target.is_none());
     }
 
+    #[test]
+    fn cpu_telemetry_meter_reflects_percentage_not_always_full() {
+        // G3: CPU is a percentage, so distinct readings give distinct, correct fractions
+        // against a 100% scale — not the old always-full `max = value.max(1.0)` bar.
+        let low = telemetry_meter(MetricKind::Cpu, 3.0).expect("cpu has a meter");
+        let high = telemetry_meter(MetricKind::Cpu, 97.0).expect("cpu has a meter");
+        assert!((low.fraction() - 0.03).abs() < 1e-9);
+        assert!((high.fraction() - 0.97).abs() < 1e-9);
+        assert_ne!(low.fraction(), high.fraction());
+        // Memory/disk/time carry no ceiling in the view-model → no fraction bar.
+        assert!(telemetry_meter(MetricKind::Memory, 256.0 * 1024.0 * 1024.0).is_none());
+        assert!(telemetry_meter(MetricKind::Disk, 64.0 * 1024.0 * 1024.0).is_none());
+        assert!(telemetry_meter(MetricKind::Time, 42.0).is_none());
+    }
+
     #[tokio::test]
     async fn telemetry_rail_shows_resource_history_timeline_and_defaults_open() {
         let fx = daedalus_tests::Fixture::new();
@@ -876,7 +901,16 @@ mod tests {
         assert_eq!(res.memory.label, "Memory");
         assert_eq!(res.memory.history.len(), 2);
         assert_eq!(res.disk.label, "Disk");
-        assert!(res.disk.meter.fraction() > 0.0);
+        // G3: disk is bytes with no known ceiling in the view-model, so it is a value
+        // readout (no fraction bar) rather than an always-full meter.
+        assert!(
+            res.disk.meter.is_none(),
+            "disk has no known ceiling — value readout, not an always-full bar"
+        );
+        assert!(
+            res.disk.value_text.contains("MB"),
+            "disk shows a byte value"
+        );
         assert_eq!(
             res.runtime_label, "Runtime",
             "still running — not \"Ran for\""

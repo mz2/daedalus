@@ -106,7 +106,7 @@ async fn stall_detection_skips_a_session_waiting_for_input() {
         .unwrap();
 
     // Even a zero stall interval must not mark a waiting session stalled (FR-015b).
-    fx.core.set_stall_interval(0);
+    fx.core.set_stall_interval(0).unwrap();
     let status = fx
         .core
         .apply_signal(id, AgentSignal::NoProgress)
@@ -117,6 +117,81 @@ async fn stall_detection_skips_a_session_waiting_for_input() {
         fx.core.session_detail(id).unwrap().session.status,
         WaitingForInput
     );
+}
+
+#[tokio::test]
+async fn awaiting_confirmation_sets_waiting_anchor_atomically() {
+    // P4: entering AwaitingConfirmation updates the status AND the waiting anchor in one
+    // write, so a reader never sees the state without its `waiting_since` anchor.
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
+
+    // Clean exit with no tracked tasks done ⇒ AwaitingConfirmation.
+    fx.core
+        .apply_signal(id, AgentSignal::ExitedCleanly)
+        .await
+        .unwrap();
+    let s = fx.core.session_detail(id).unwrap().session;
+    assert_eq!(s.status, AwaitingConfirmation);
+    assert!(
+        s.waiting_since.is_some(),
+        "waiting anchor is set together with the status"
+    );
+    assert_eq!(s.pending_prompt, None);
+}
+
+#[tokio::test]
+async fn resuming_from_stall_clears_the_stale_outcome() {
+    // P6: a stall records a reason Outcome; resuming to Running must clear it so a later
+    // banner never shows the stale stall reason.
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
+
+    fx.core
+        .apply_signal(id, AgentSignal::NoProgress)
+        .await
+        .unwrap();
+    let stalled = fx.core.session_detail(id).unwrap().session;
+    assert_eq!(stalled.status, Stalled);
+    assert!(stalled.terminal_outcome.is_some(), "stall records a reason");
+
+    fx.core
+        .apply_signal(id, AgentSignal::Progress)
+        .await
+        .unwrap();
+    let running = fx.core.session_detail(id).unwrap().session;
+    assert_eq!(running.status, Running);
+    assert_eq!(
+        running.terminal_outcome, None,
+        "the stale stall reason is cleared on resume"
+    );
+}
+
+#[tokio::test]
+async fn exiting_waiting_for_input_clears_prompt_and_anchor() {
+    // S2: any exit out of WaitingForInput to a non-waiting state clears the pending prompt
+    // and waiting anchor (here: the agent crashes while a question is pending).
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
+    fx.core
+        .mark_waiting_for_input(id, "Continue? (y/n)")
+        .unwrap();
+    let waiting = fx.core.session_detail(id).unwrap().session;
+    assert_eq!(waiting.status, WaitingForInput);
+    assert_eq!(waiting.pending_prompt.as_deref(), Some("Continue? (y/n)"));
+    assert!(waiting.waiting_since.is_some());
+
+    fx.core
+        .apply_signal(id, AgentSignal::Crashed)
+        .await
+        .unwrap();
+    let failed = fx.core.session_detail(id).unwrap().session;
+    assert_eq!(failed.status, Failed);
+    assert_eq!(failed.pending_prompt, None, "S2: prompt cleared on exit");
+    assert_eq!(failed.waiting_since, None, "S2: anchor cleared on exit");
 }
 
 #[tokio::test]

@@ -82,13 +82,24 @@ impl Core {
                 exit_summary: self.exit_summary(id),
             };
             note = outcome.exit_summary.clone();
-            self.store
-                .set_session_status_with_outcome(id, next, ended, Some(&outcome))?;
-            self.store
-                .set_session_waiting(id, None, Some(clock::now()))?;
+            // One atomic write: status + outcome + the waiting anchor together, so a reader
+            // never sees AwaitingConfirmation without its `waiting_since` (P4).
+            self.store.set_session_state(
+                id,
+                next,
+                ended,
+                Some(&outcome),
+                None,
+                Some(clock::now()),
+            )?;
         } else {
+            // `set_session_state` normalizes the waiting columns and `terminal_outcome` from
+            // the target status: exiting a waiting state clears its prompt/anchor (S2) and a
+            // live transition (e.g. Stalled → Running on Progress) clears the stale outcome
+            // (P6).
+            let outcome = note.as_deref().map(Outcome::reason);
             self.store
-                .set_session_status(id, next, ended, note.as_deref())?;
+                .set_session_state(id, next, ended, outcome.as_ref(), None, None)?;
         }
         self.record_lifecycle(id, next, note);
         Ok(next)
@@ -113,9 +124,9 @@ impl Core {
     ) -> Result<SessionStatus, CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
         let next = transition(session.status, Trigger::InputRequested)?;
+        // One atomic write: enter WaitingForInput with its prompt + waiting anchor together.
         self.store
-            .set_session_waiting(id, Some(prompt), Some(clock::now()))?;
-        self.store.set_session_status(id, next, None, None)?;
+            .set_session_state(id, next, None, None, Some(prompt), Some(clock::now()))?;
         self.record_lifecycle(id, next, Some(prompt.to_string()));
         Ok(next)
     }
@@ -125,8 +136,9 @@ impl Core {
     pub fn clear_waiting_for_input(&self, id: SessionId) -> Result<SessionStatus, CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
         let next = transition(session.status, Trigger::InputProvided)?;
-        self.store.set_session_waiting(id, None, None)?;
-        self.store.set_session_status(id, next, None, None)?;
+        // Back to Running: clears the pending prompt + anchor and any stale outcome (P6).
+        self.store
+            .set_session_state(id, next, None, None, None, None)?;
         self.record_lifecycle(id, next, None);
         Ok(next)
     }

@@ -59,41 +59,75 @@ impl Core {
             .await
             .map_err(|e| CoreError::Acquire(e.to_string()))?;
 
-        // 5. Persist the supporting records and a transient `Starting` session.
-        self.store.upsert_objective(&req.objective)?;
-        self.store.upsert_environment(&env)?;
-        let source = Source {
-            id: SourceId::new(),
-            kind: SourceKind::Local,
-            availability: Availability::Available,
-            availability_reason: None,
-        };
-        self.store.upsert_source(&source)?;
+        // From here the environment is LIVE: any failure before the agent is confirmed
+        // running MUST tear it down so nothing is orphaned (C-B2). The provisioning work
+        // runs in a fallible block whose `Err` funnels into the single teardown site below;
+        // `created` carries the transient session id (once persisted) so it is removed too.
+        let mut created: Option<SessionId> = None;
+        let launched: Result<(SessionId, daedalus_backend::AgentHandle), CoreError> = async {
+            // 5. Persist the supporting records and a transient `Starting` session.
+            self.store.upsert_objective(&req.objective)?;
+            self.store.upsert_environment(&env)?;
+            let source = Source {
+                id: SourceId::new(),
+                kind: SourceKind::Local,
+                availability: Availability::Available,
+                availability_reason: None,
+            };
+            self.store.upsert_source(&source)?;
 
-        let id = SessionId::new();
-        let session = Session {
-            id,
-            tool_id: tool.id,
-            objective_id: req.objective.id,
-            environment_id: env.id,
-            source_id: source.id,
-            status: SessionStatus::Starting,
-            created_at: clock::now(),
-            started_at: None,
-            ended_at: None,
-            terminal_outcome: None,
-            accepts_input: tool.capabilities.accepts_interactive_input,
-            pending_prompt: None,
-            waiting_since: None,
-            work_item_ref: None,
-            last_known_status: None,
-        };
-        self.store.upsert_session(&session)?;
-        self.record_lifecycle(id, SessionStatus::Starting, None);
+            let id = SessionId::new();
+            let session = Session {
+                id,
+                tool_id: tool.id,
+                objective_id: req.objective.id,
+                environment_id: env.id,
+                source_id: source.id,
+                status: SessionStatus::Starting,
+                created_at: clock::now(),
+                started_at: None,
+                ended_at: None,
+                terminal_outcome: None,
+                accepts_input: tool.capabilities.accepts_interactive_input,
+                pending_prompt: None,
+                waiting_since: None,
+                work_item_ref: None,
+                last_known_status: None,
+            };
 
-        // 6. Launch the agent. On failure: tear the environment down and remove the record.
-        match backend.start_agent(&env.id, &tool.invocation).await {
-            Ok(handle) => {
+            // 5a. Reserve the concurrency slot atomically (FR-026): the active count and the
+            // record that makes THIS session count are taken under a single config-lock, so
+            // two concurrent starts cannot both pass the limit (the pre-check at step 2 is
+            // only a fast-path rejection and races). No `.await` is held across the guard.
+            {
+                let cfg = self.config.lock().expect("poisoned");
+                if let Some(limit) = cfg.concurrency_limit {
+                    let active = self
+                        .store
+                        .list_sessions()?
+                        .iter()
+                        .filter(|s| !s.status.is_terminal())
+                        .count();
+                    if active >= limit {
+                        return Err(CoreError::ConcurrencyLimitReached(limit));
+                    }
+                }
+                self.store.upsert_session(&session)?;
+            }
+            created = Some(id);
+            self.record_lifecycle(id, SessionStatus::Starting, None);
+
+            // 6. Launch the agent.
+            let handle = backend
+                .start_agent(&env.id, &tool.invocation)
+                .await
+                .map_err(|e| CoreError::StartFailed(e.to_string()))?;
+            Ok((id, handle))
+        }
+        .await;
+
+        match launched {
+            Ok((id, handle)) => {
                 let running = transition(SessionStatus::Starting, Trigger::Started)?;
                 self.store.set_session_started(id, clock::now())?;
                 self.store.set_session_status(id, running, None, None)?;
@@ -111,12 +145,16 @@ impl Core {
                 Ok(id)
             }
             Err(e) => {
+                // ANY post-acquire failure tears the environment down and removes the
+                // transient record — no orphaned environment or session remains (C-B2).
                 let _ = backend.teardown(&env.id).await;
-                let _ = self.store.delete_session(id);
+                if let Some(id) = created {
+                    let _ = self.store.delete_session(id);
+                }
                 let _ = self
                     .store
                     .set_environment_lifecycle(env.id, EnvLifecycle::Released);
-                Err(CoreError::StartFailed(e.to_string()))
+                Err(e)
             }
         }
     }

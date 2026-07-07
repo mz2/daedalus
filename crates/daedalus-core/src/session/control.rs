@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use daedalus_proto::{EnvLifecycle, OperatorAction, SessionId};
+use daedalus_proto::{EnvLifecycle, OperatorAction, Outcome, SessionId};
 
 use crate::session::state::{transition, Trigger};
 use crate::{clock, map_not_found, Core, CoreError};
@@ -36,8 +36,10 @@ impl Core {
         }
 
         let next = transition(session.status, Trigger::OperatorStopped)?;
+        // Stopping from a waiting state clears its pending prompt + anchor (S2).
+        let outcome = Outcome::reason(reason);
         self.store
-            .set_session_status(id, next, Some(clock::now()), Some(reason))?;
+            .set_session_state(id, next, Some(clock::now()), Some(&outcome), None, None)?;
         if operator_action {
             self.record_operator_action(id, OperatorAction::Stop);
         }
@@ -101,8 +103,10 @@ impl Core {
     pub async fn confirm_completion(&self, id: SessionId) -> Result<(), CoreError> {
         let session = self.store.get_session(id).map_err(map_not_found)?;
         let next = transition(session.status, Trigger::OperatorConfirmed)?;
+        // Preserve the AwaitingConfirmation outcome (exit summary) into Completed; clear the
+        // waiting anchor.
         self.store
-            .set_session_status(id, next, Some(clock::now()), None)?;
+            .set_session_state(id, next, Some(clock::now()), None, None, None)?;
         self.record_operator_action(id, OperatorAction::ConfirmCompletion);
         self.record_lifecycle(id, next, None);
         Ok(())

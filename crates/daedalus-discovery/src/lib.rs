@@ -9,7 +9,7 @@ pub mod local;
 pub mod mdns;
 pub mod tunnel;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -121,29 +121,44 @@ impl DiscoveryCoordinator {
         let mut last = self.last_seen.lock().expect("poisoned");
         let mut all = Vec::new();
         for (sid, availability, polled) in polled_all {
-            if availability == Availability::Unavailable {
+            // Freshly-polled sessions, tagged with the source's current availability.
+            let mut merged: Vec<DiscoveredSession> = polled
+                .into_iter()
+                .map(|mut session| {
+                    session.source_availability = availability;
+                    session
+                })
+                .collect();
+
+            // FR-014 / C-D2: while a source is not fully Available (Degraded when one of
+            // several tunnel targets drops, or Unavailable when it drops entirely), the
+            // poll only carries the still-reachable sessions. Retain previously-seen
+            // sessions that are absent from this poll and mark them unreachable rather than
+            // dropping them. A fully Available source is authoritative, so a session that is
+            // legitimately gone from its poll is removed (no retain-forever).
+            if availability != Availability::Available {
+                let present: HashSet<SessionIdentity> = merged
+                    .iter()
+                    .map(|session| session.id.identity.clone())
+                    .collect();
                 if let Some(prev) = last.get(&sid) {
                     for mut session in prev.clone() {
+                        if present.contains(&session.id.identity) {
+                            continue;
+                        }
                         session.source_availability = Availability::Unavailable;
                         session.attachable = false;
                         session.attach_reason = Some(
                             "source unreachable — host stopped advertising or tunnel dropped"
                                 .into(),
                         );
-                        all.push(session);
+                        merged.push(session);
                     }
                 }
-            } else {
-                let current: Vec<DiscoveredSession> = polled
-                    .into_iter()
-                    .map(|mut session| {
-                        session.source_availability = availability;
-                        session
-                    })
-                    .collect();
-                last.insert(sid, current.clone());
-                all.extend(current);
             }
+
+            last.insert(sid, merged.clone());
+            all.extend(merged);
         }
         drop(last);
 
