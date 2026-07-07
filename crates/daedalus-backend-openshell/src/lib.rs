@@ -6,14 +6,18 @@
 //! Apple silicon, where enforcement runs inside the Docker Desktop Linux VM — Linux
 //! container environments, no GPU (support matrix, issue #9 comments).
 //!
-//! The host control surface is modelled behind [`OpenShellControl`] so availability
-//! tiers and failure paths are testable without the CLI or Docker present; the exact
-//! CLI/policy schema is confirmed against real OpenShell during contract work (the
-//! open questions recorded on issue #9).
+//! The CLI surface and policy schema implemented here were confirmed against openshell
+//! 0.0.77 on macOS/Apple silicon (2026-07-07): `sandbox create --name … --policy …
+//! [--cpu/--memory/--gpu] --no-auto-providers`, `sandbox exec -n … --no-tty -- …`,
+//! `sandbox delete <name>`; policy schema per `openshell policy get --base -o json`
+//! (`filesystem_policy` / `network_policies` / `landlock`). The host surface is modelled
+//! behind [`OpenShellControl`] so availability tiers and failure paths are testable
+//! without the CLI or Docker present.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -25,10 +29,23 @@ use daedalus_proto::{
     SandboxEnvironment,
 };
 
+/// Output of a completed control-plane CLI invocation.
+#[derive(Debug, Clone)]
+pub struct CliOutput {
+    /// Whether the command exited successfully.
+    pub success: bool,
+    /// Captured standard output.
+    pub stdout: String,
+    /// Captured standard error.
+    pub stderr: String,
+}
+
 /// The OpenShell host surface Daedalus probes and drives.
 ///
-/// Pluggable for tests and future transports (the gateway API); the default resolves the
-/// CLI and host runtimes from the environment.
+/// Pluggable for tests and future transports (the gateway's mTLS gRPC control plane, if
+/// NVIDIA documents it for external clients); the default resolves the CLI and host
+/// runtimes from the environment.
+#[async_trait]
 pub trait OpenShellControl: Send + Sync {
     /// Name/path of the `openshell` CLI, if configured/present.
     fn control_binary(&self) -> Option<String>;
@@ -38,6 +55,11 @@ pub trait OpenShellControl: Send + Sync {
     /// Whether GPU passthrough is ready (NVIDIA driver + Container Toolkit; Linux hosts
     /// only — macOS sandboxes never see a GPU).
     fn gpu_ready(&self) -> bool;
+    /// Run a control-plane command (`sandbox create`/`delete`, …) to completion.
+    async fn run(&self, args: &[String]) -> Result<CliOutput, String>;
+    /// Spawn a long-lived command detached — the agent's `sandbox exec` lives as long as
+    /// the session does and is never awaited here.
+    fn spawn(&self, args: &[String]) -> Result<(), String>;
 }
 
 /// Default control resolving the `openshell` CLI from `DAEDALUS_OPENSHELL_CMD` or `PATH`,
@@ -45,8 +67,8 @@ pub trait OpenShellControl: Send + Sync {
 #[derive(Debug, Default)]
 pub struct CliOpenShellControl;
 
-impl OpenShellControl for CliOpenShellControl {
-    fn control_binary(&self) -> Option<String> {
+impl CliOpenShellControl {
+    fn binary(&self) -> Option<String> {
         if let Ok(cmd) = std::env::var("DAEDALUS_OPENSHELL_CMD") {
             if !cmd.is_empty() {
                 return Some(cmd);
@@ -61,16 +83,50 @@ impl OpenShellControl for CliOpenShellControl {
             None
         }
     }
+}
+
+#[async_trait]
+impl OpenShellControl for CliOpenShellControl {
+    fn control_binary(&self) -> Option<String> {
+        self.binary()
+    }
 
     fn container_runtime_ready(&self) -> bool {
         // Docker Desktop on macOS; Docker (or native enforcement) on Linux. Presence of
-        // the CLI is the cheap probe; a real daemon ping happens on first `acquire`.
+        // the CLI is the cheap probe; the daemon answers on first `acquire`.
         which_on_path("docker").is_some()
     }
 
     fn gpu_ready(&self) -> bool {
         // GPU is Linux-hosts-only (CDI / NVIDIA Container Toolkit).
         cfg!(target_os = "linux") && which_on_path("nvidia-smi").is_some()
+    }
+
+    async fn run(&self, args: &[String]) -> Result<CliOutput, String> {
+        let binary = self
+            .binary()
+            .ok_or_else(|| "openshell CLI gone".to_string())?;
+        let output = tokio::process::Command::new(&binary)
+            .args(args)
+            .output()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(CliOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    fn spawn(&self, args: &[String]) -> Result<(), String> {
+        let binary = self
+            .binary()
+            .ok_or_else(|| "openshell CLI gone".to_string())?;
+        tokio::process::Command::new(&binary)
+            .args(args)
+            .spawn()
+            .map(drop)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -85,80 +141,68 @@ fn which_on_path(bin: &str) -> Option<String> {
     None
 }
 
-/// Generate the per-session OpenShell policy (YAML) from an acquire request.
+/// Where a pre-existing session's worktree lands inside the sandbox (FR-002a). Delivery
+/// into this path (upload vs driver-level bind) is tracked on issue #9.
+pub const WORKTREE_MOUNT: &str = "/sandbox/worktree";
+
+/// Generate the per-session OpenShell policy (YAML) from an acquire request, in the real
+/// schema (`policy get --base -o json`, openshell 0.0.77).
 ///
-/// The policy encodes Daedalus's guarantees declaratively: the isolated worktree is the
-/// only host mount (FR-002a; fresh environments mount nothing), outbound network is
-/// denied by default (local-first posture), no host environment/credentials pass through
-/// (FR-031), operator resource limits map onto the sandbox, and GPU appears only when the
-/// host is GPU-ready. Field names are validated against real OpenShell during contract
-/// work (issue #9 open questions).
+/// The policy encodes Daedalus's guarantees declaratively: deny-all egress via an empty
+/// `network_policies` map (the enforcing proxy 403s every CONNECT no policy allows —
+/// local-first posture), the baseline filesystem grants the built-in default uses (so the
+/// sandbox supervisor stays functional) plus [`WORKTREE_MOUNT`] read-write only for
+/// pre-existing environments (FR-002a), and no provider/credential entries (FR-031 —
+/// resource limits and GPU ride `sandbox create` flags instead, see `acquire`).
 #[must_use]
-pub fn session_policy_yaml(req: &AcquireRequest, gpu: bool) -> String {
-    let mut yaml = String::from("version: 1\nsandbox:\n  filesystem:\n");
-    match &req.worktree {
-        Some(wt) => {
-            // The isolated git worktree is the one read-write host mount (FR-002a).
-            yaml.push_str("    mounts:\n");
-            let _ = writeln!(yaml, "      - source: {}", wt.path);
-            yaml.push_str("        target: /workspace\n        mode: rw\n");
-            let _ = writeln!(yaml, "        branch: {}", wt.branch);
-        }
-        None => yaml.push_str("    mounts: []\n"),
+pub fn session_policy_yaml(req: &AcquireRequest) -> String {
+    let mut yaml = String::from(
+        "version: 1\n\
+         filesystem_policy:\n  \
+           include_workdir: true\n  \
+           read_only:\n    \
+             - /usr\n    \
+             - /lib\n    \
+             - /proc\n    \
+             - /dev/urandom\n    \
+             - /etc\n    \
+             - /var/log\n  \
+           read_write:\n    \
+             - /sandbox\n    \
+             - /tmp\n    \
+             - /dev/null\n",
+    );
+    if req.worktree.is_some() {
+        let _ = writeln!(yaml, "    - {WORKTREE_MOUNT}");
     }
-    // Local-first posture: no open egress unless the operator widens it explicitly.
-    yaml.push_str("  network:\n    outbound: deny\n");
-    // Never forward host credentials/environment (FR-031).
-    yaml.push_str("  environment:\n    passthrough: []\n");
-    let limits = &req.limits;
-    if limits.cpu_cores.is_some()
-        || limits.memory_bytes.is_some()
-        || limits.disk_bytes.is_some()
-        || limits.time_secs.is_some()
-    {
-        yaml.push_str("  resources:\n");
-        if let Some(cpu) = limits.cpu_cores {
-            let _ = writeln!(yaml, "    cpu_cores: {cpu}");
-        }
-        if let Some(mem) = limits.memory_bytes {
-            let _ = writeln!(yaml, "    memory_bytes: {mem}");
-        }
-        if let Some(disk) = limits.disk_bytes {
-            let _ = writeln!(yaml, "    disk_bytes: {disk}");
-        }
-        if let Some(time) = limits.time_secs {
-            let _ = writeln!(yaml, "    time_secs: {time}");
-        }
-    }
-    if gpu {
-        yaml.push_str("  gpu:\n    enabled: true\n");
-    }
+    yaml.push_str("landlock:\n  compatibility: best_effort\nnetwork_policies: {}\n");
     yaml
 }
 
 #[derive(Debug, Clone)]
 struct EnvState {
     policy_yaml: String,
+    policy_path: PathBuf,
     zellij_session: Option<String>,
 }
 
 /// OpenShell-backed sandbox provider.
 pub struct OpenShellBackend {
     id: BackendId,
-    control: Box<dyn OpenShellControl>,
+    control: Arc<dyn OpenShellControl>,
     envs: Mutex<HashMap<EnvironmentId, EnvState>>,
 }
 
 impl Default for OpenShellBackend {
     fn default() -> Self {
-        Self::new(Box::new(CliOpenShellControl))
+        Self::new(Arc::new(CliOpenShellControl))
     }
 }
 
 impl OpenShellBackend {
     /// Create the backend with a given host control surface.
     #[must_use]
-    pub fn new(control: Box<dyn OpenShellControl>) -> Self {
+    pub fn new(control: Arc<dyn OpenShellControl>) -> Self {
         Self {
             id: BackendId::new(),
             control,
@@ -180,8 +224,8 @@ impl OpenShellBackend {
         self.envs.lock().expect("poisoned").len()
     }
 
-    /// The generated policy confining the given environment, if it exists — what a real
-    /// `openshell sandbox create` is driven by, auditable by the operator.
+    /// The generated policy confining the given environment, if it exists — what
+    /// `sandbox create --policy` was driven by, auditable by the operator.
     #[must_use]
     pub fn policy_for(&self, env: &EnvironmentId) -> Option<String> {
         self.envs
@@ -191,7 +235,7 @@ impl OpenShellBackend {
             .map(|s| s.policy_yaml.clone())
     }
 
-    /// The sandbox name a real OpenShell CLI call addresses for this environment.
+    /// The sandbox name the OpenShell CLI addresses for this environment.
     fn sandbox_name(env: &EnvironmentId) -> String {
         format!("daedalus-{env}")
     }
@@ -210,6 +254,23 @@ impl OpenShellBackend {
         }
         None
     }
+
+    async fn delete_sandbox(&self, env: &EnvironmentId) {
+        let _ = self
+            .control
+            .run(&args(&["sandbox", "delete", &Self::sandbox_name(env)]))
+            .await;
+    }
+}
+
+fn args(strs: &[&str]) -> Vec<String> {
+    strs.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// `--memory` accepts human units (`512Mi`, `4Gi`); map a byte ceiling to whole MiB,
+/// rounding up so the limit is never tightened past what the operator granted.
+fn memory_flag(bytes: u64) -> String {
+    format!("{}Mi", bytes.div_ceil(1024 * 1024))
 }
 
 #[async_trait]
@@ -245,14 +306,59 @@ impl Backend for OpenShellBackend {
         }
         require_worktree(&req)?;
 
-        let policy_yaml = session_policy_yaml(&req, self.control.gpu_ready());
-        // A real implementation feeds the policy to `openshell sandbox create` here and
-        // confirms the sandbox handle before recording the environment.
+        let policy_yaml = session_policy_yaml(&req);
+        let limits = req.limits;
         let env = req.into_ready_environment(self.id);
+        let name = Self::sandbox_name(&env.id);
+
+        // The policy rides a file handed to `--policy`; kept for the sandbox's lifetime
+        // so the confinement in force stays auditable on disk too.
+        let policy_path = std::env::temp_dir().join(format!("{name}.policy.yaml"));
+        std::fs::write(&policy_path, &policy_yaml)
+            .map_err(|e| BackendError::ProvisionFailed(format!("could not write policy: {e}")))?;
+
+        let mut create = args(&["sandbox", "create", "--name", &name]);
+        create.push("--policy".into());
+        create.push(policy_path.to_string_lossy().into_owned());
+        if let Some(cpu) = limits.cpu_cores {
+            create.push("--cpu".into());
+            create.push(cpu.to_string());
+        }
+        if let Some(mem) = limits.memory_bytes {
+            create.push("--memory".into());
+            create.push(memory_flag(mem));
+        }
+        if self.control.gpu_ready() {
+            create.push("--gpu".into());
+        }
+        // Non-interactive: never auto-create credential providers (FR-031 — the operator
+        // pre-provisions secrets); no TTY; the initial command exits immediately and the
+        // sandbox stays ready for `start_agent` (create keeps sandboxes by default).
+        create.extend(args(&["--no-auto-providers", "--no-tty", "--", "true"]));
+        // NOTE: wall-clock (`time_secs`) has no create flag; the core enforces it
+        // (FR-025). `disk_bytes` likewise has no CLI mapping yet (issue #9).
+
+        let result = self.control.run(&create).await;
+        let failed = match &result {
+            Err(e) => Some(e.clone()),
+            Ok(out) if !out.success => Some(if out.stderr.is_empty() {
+                "sandbox create failed".to_string()
+            } else {
+                out.stderr.trim().to_string()
+            }),
+            Ok(_) => None,
+        };
+        if let Some(reason) = failed {
+            // Failure leaves NO environment behind (C-B2).
+            let _ = std::fs::remove_file(&policy_path);
+            return Err(BackendError::ProvisionFailed(reason));
+        }
+
         self.envs.lock().expect("poisoned").insert(
             env.id,
             EnvState {
                 policy_yaml,
+                policy_path,
                 zellij_session: None,
             },
         );
@@ -264,33 +370,29 @@ impl Backend for OpenShellBackend {
         env: &EnvironmentId,
         tool: &InvocationSpec,
     ) -> Result<AgentHandle, BackendError> {
-        let control = self
-            .control
-            .control_binary()
-            .ok_or_else(|| BackendError::StartFailed("openshell CLI gone".into()))?;
         if !self.envs.lock().expect("poisoned").contains_key(env) {
             return Err(BackendError::NotFound);
         }
         let zellij_session = daedalus_zellij::format_session_name(env);
 
         // Launch the agent inside the sandbox, under zellij (FR-004, FR-011):
-        //   <openshell> sandbox exec <name> -- zellij --session <name> -- <program> <args...>
-        let mut cmd = tokio::process::Command::new(&control);
-        cmd.arg("sandbox")
-            .arg("exec")
-            .arg(Self::sandbox_name(env))
-            .arg("--")
-            .arg("zellij")
-            .arg("--session")
-            .arg(&zellij_session)
-            .arg("--")
-            .arg(&tool.program)
-            .args(&tool.args);
+        //   openshell sandbox exec -n <name> --no-tty -- zellij --session <s> -- <tool>…
+        let mut exec = args(&["sandbox", "exec", "-n", &Self::sandbox_name(env)]);
+        exec.extend(args(&["--no-tty", "--", "zellij", "--session"]));
+        exec.push(zellij_session.clone());
+        exec.push("--".into());
+        exec.push(tool.program.clone());
+        exec.extend(tool.args.iter().cloned());
 
-        if let Err(e) = cmd.spawn() {
-            // A failed start tears the environment down — no orphan (FR-005, C-B2).
-            self.envs.lock().expect("poisoned").remove(env);
-            return Err(BackendError::StartFailed(e.to_string()));
+        if let Err(e) = self.control.spawn(&exec) {
+            // A failed start tears the environment down — no orphan (FR-005, C-B2),
+            // including the real sandbox.
+            let removed = self.envs.lock().expect("poisoned").remove(env);
+            self.delete_sandbox(env).await;
+            if let Some(state) = removed {
+                let _ = std::fs::remove_file(&state.policy_path);
+            }
+            return Err(BackendError::StartFailed(e));
         }
 
         if let Some(state) = self.envs.lock().expect("poisoned").get_mut(env) {
@@ -306,8 +408,8 @@ impl Backend for OpenShellBackend {
         if !self.envs.lock().expect("poisoned").contains_key(env) {
             return Err(BackendError::NotFound);
         }
-        // A full implementation queries the sandbox's cgroup stats via the CLI; report
-        // time-only until that surface is confirmed (issue #9 open questions, FR-019).
+        // The CLI exposes no stats surface yet (0.0.77); report time-only until the
+        // driver-level metrics path is confirmed (issue #9 open questions, FR-019).
         Ok(vec![UsageSample {
             metric: MetricKind::Time,
             value: 0.0,
@@ -335,15 +437,9 @@ impl Backend for OpenShellBackend {
     async fn teardown(&self, env: &EnvironmentId) -> Result<(), BackendError> {
         // Idempotent and isolated to one environment (C-B5, FR-024).
         let removed = self.envs.lock().expect("poisoned").remove(env);
-        if removed.is_some() {
-            if let Some(control) = self.control.control_binary() {
-                let _ = tokio::process::Command::new(&control)
-                    .arg("sandbox")
-                    .arg("delete")
-                    .arg(Self::sandbox_name(env))
-                    .output()
-                    .await;
-            }
+        if let Some(state) = removed {
+            self.delete_sandbox(env).await;
+            let _ = std::fs::remove_file(&state.policy_path);
         }
         Ok(())
     }
