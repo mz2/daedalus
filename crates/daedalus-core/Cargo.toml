@@ -1,0 +1,30 @@
+[package]
+name = "daedalus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Daedalus orchestration core: sessions, state machine, persistence, reconciliation."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-backend = { workspace = true }
+daedalus-discovery = { workspace = true }
+daedalus-zellij = { workspace = true }
+daedalus-sdk = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+daedalus-backend-fake = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "daedalus-backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend trait + common environment/provisioning value types for Daedalus sandboxes."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }

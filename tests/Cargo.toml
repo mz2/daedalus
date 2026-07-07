@@ -1,0 +1,119 @@
+[package]
+name = "daedalus-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Contract + integration test harness for Daedalus (test-first, Principle I)."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-backend = { workspace = true }
+daedalus-backend-fake = { workspace = true }
+daedalus-backend-workshop = { workspace = true }
+daedalus-discovery = { workspace = true }
+daedalus-zellij = { workspace = true }
+daedalus-sdk = { workspace = true }
+daedalus-core = { workspace = true }
+daedalus-app = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+tempfile = { workspace = true }
+async-trait = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+
+# Contract tests (test-first per Constitution Principle I).
+[[test]]
+name = "contract_backend"
+path = "contract/backend.rs"
+[[test]]
+name = "contract_persistence"
+path = "contract/persistence.rs"
+[[test]]
+name = "contract_app_start"
+path = "contract/app_start.rs"
+[[test]]
+name = "contract_terminal_attach"
+path = "contract/terminal_attach.rs"
+[[test]]
+name = "contract_sdk_task_states"
+path = "contract/sdk_task_states.rs"
+[[test]]
+name = "contract_discovery"
+path = "contract/discovery.rs"
+[[test]]
+name = "contract_control"
+path = "contract/control.rs"
+[[test]]
+name = "contract_availability"
+path = "contract/availability.rs"
+
+# Unit tests located under tests/ per the task plan.
+[[test]]
+name = "unit_state_machine"
+path = "unit/state_machine.rs"
+[[test]]
+name = "unit_redact"
+path = "unit/redact.rs"
+[[test]]
+name = "unit_proto_attention"
+path = "unit/proto_attention.rs"
+
+# Integration tests.
+[[test]]
+name = "integration_attach"
+path = "integration/attach.rs"
+[[test]]
+name = "integration_start_session"
+path = "integration/start_session.rs"
+[[test]]
+name = "integration_isolation"
+path = "integration/isolation.rs"
+[[test]]
+name = "integration_monitor"
+path = "integration/monitor.rs"
+[[test]]
+name = "integration_resource_usage"
+path = "integration/resource_usage.rs"
+[[test]]
+name = "integration_notifications"
+path = "integration/notifications.rs"
+[[test]]
+name = "integration_discover"
+path = "integration/discover.rs"
+[[test]]
+name = "integration_control"
+path = "integration/control.rs"
+[[test]]
+name = "integration_fleet"
+path = "integration/fleet.rs"
+[[test]]
+name = "integration_portability"
+path = "integration/portability.rs"
+[[test]]
+name = "integration_reconcile"
+path = "integration/reconcile.rs"
+[[test]]
+name = "integration_retention"
+path = "integration/retention.rs"
+[[test]]
+name = "integration_network_posture"
+path = "integration/network_posture.rs"
+[[test]]
+name = "integration_waiting_input"
+path = "integration/waiting_input.rs"
+[[test]]
+name = "integration_needs_you"
+path = "integration/needs_you.rs"
+[[test]]
+name = "integration_tasks_board"
+path = "integration/tasks_board.rs"
+[[test]]
+name = "integration_limits"
+path = "integration/limits.rs"

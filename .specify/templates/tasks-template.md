@@ -8,7 +8,7 @@ description: "Task list template for feature implementation"
 **Input**: Design documents from `/specs/[###-feature-name]/`
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: Per the project constitution (Principle I — Red/Green TDD, NON-NEGOTIABLE), behavioral changes are driven by tests written FIRST. Test tasks are REQUIRED for any task that adds or alters observable behavior, and each such test MUST be demonstrated to fail before its implementation task begins. Pure refactors (no behavioral change) are exempt but MUST keep the suite green.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
@@ -50,7 +50,8 @@ description: "Task list template for feature implementation"
 
 - [ ] T001 Create project structure per implementation plan
 - [ ] T002 Initialize [language] project with [framework] dependencies
-- [ ] T003 [P] Configure linting and formatting tools
+- [ ] T003 [P] Configure linting and formatting tools with warnings-as-errors for every language touched (Constitution Principle II)
+- [ ] T003a [P] Provide a documented local runtime path (script/devcontainer/compose/Makefile target) plus single-command `test` and `lint` entry points (Constitution Principle III)
 
 ---
 
@@ -79,9 +80,9 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 1 (OPTIONAL - only if tests requested) ⚠️
+### Tests for User Story 1 (REQUIRED for behavioral changes — Constitution Principle I) ⚠️
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
+> **NOTE: Write these tests FIRST, ensure they FAIL for the expected reason before implementation (red → green)**
 
 - [ ] T010 [P] [US1] Contract test for [endpoint] in tests/contract/test_[name].py
 - [ ] T011 [P] [US1] Integration test for [user journey] in tests/integration/test_[name].py
@@ -105,7 +106,9 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 2 (OPTIONAL - only if tests requested) ⚠️
+### Tests for User Story 2 (REQUIRED for behavioral changes — Constitution Principle I) ⚠️
+
+> **NOTE: Write these tests FIRST, ensure they FAIL before implementation (red → green)**
 
 - [ ] T018 [P] [US2] Contract test for [endpoint] in tests/contract/test_[name].py
 - [ ] T019 [P] [US2] Integration test for [user journey] in tests/integration/test_[name].py
@@ -127,7 +130,9 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 3 (OPTIONAL - only if tests requested) ⚠️
+### Tests for User Story 3 (REQUIRED for behavioral changes — Constitution Principle I) ⚠️
+
+> **NOTE: Write these tests FIRST, ensure they FAIL before implementation (red → green)**
 
 - [ ] T024 [P] [US3] Contract test for [endpoint] in tests/contract/test_[name].py
 - [ ] T025 [P] [US3] Integration test for [user journey] in tests/integration/test_[name].py

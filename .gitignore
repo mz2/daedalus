@@ -1,0 +1,24 @@
+# Rust
+/target/
+**/*.rs.bk
+*.rlib
+*.prof*
+
+# Local Daedalus state (SQLite DB + capture files)
+*.sqlite
+*.sqlite-*
+/.daedalus/
+
+# Nix
+/result
+/result-*
+.direnv/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*.log
+.env*

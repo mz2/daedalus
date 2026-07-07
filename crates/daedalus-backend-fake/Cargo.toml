@@ -1,0 +1,17 @@
+[package]
+name = "daedalus-backend-fake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-memory fake backend that drives Daedalus contract/integration tests locally."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-backend = { workspace = true }
+daedalus-zellij = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,3 @@
+# Conservative defaults; warnings are promoted to errors in CI / justfile
+# (`cargo clippy --workspace --all-targets -- -D warnings`). No blanket #[allow].
+too-many-arguments-threshold = 8

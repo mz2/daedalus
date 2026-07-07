@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-skin="yaru" data-density="regular">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Daedalus — Orchestrate & monitor agentic tools</title>
+  <link rel="icon" type="image/svg+xml" href="assets/daedalus-icon.svg" />
+  <link rel="stylesheet" href="daedalus.css?v=21" />
+  <link rel="stylesheet" href="components.css?v=33" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <template id="__bundler_thumbnail" data-bg-color="#141414">
+    <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+      <g fill="none" stroke="#E95420" stroke-width="30" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M222 416 L96 416 L96 96 L416 96 L416 416 L290 416"></path>
+        <path d="M226 168 L168 168 L168 344 L344 344 L344 168 L286 168"></path>
+      </g>
+      <circle cx="256" cy="256" r="34" fill="#E95420"></circle>
+    </svg>
+  </template>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="data.js?v=22"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <script type="text/babel" src="icons.jsx?v=18"></script>
+  <script type="text/babel" src="primitives.jsx?v=21"></script>
+  <script type="text/babel" src="tasks.jsx?v=13"></script>
+  <script type="text/babel" src="fleet.jsx?v=18"></script>
+  <script type="text/babel" src="session.jsx?v=16"></script>
+  <script type="text/babel" src="needs.jsx?v=4"></script>
+  <script type="text/babel" src="screens.jsx?v=23"></script>
+  <script type="text/babel" src="palette.jsx?v=2"></script>
+  <script type="text/babel" src="app.jsx?v=21"></script>
+</body>
+</html>

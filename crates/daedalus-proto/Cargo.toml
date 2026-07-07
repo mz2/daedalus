@@ -1,0 +1,15 @@
+[package]
+name = "daedalus-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared serde contract types (ids, status, entities) for Daedalus."
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
