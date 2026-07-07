@@ -130,7 +130,8 @@ impl Core {
             Ok((id, handle)) => {
                 let running = transition(SessionStatus::Starting, Trigger::Started)?;
                 self.store.set_session_started(id, clock::now())?;
-                self.store.set_session_status(id, running, None, None)?;
+                self.store
+                    .set_session_state(id, running, None, None, None, None)?;
                 self.runtime.lock().expect("poisoned").insert(
                     id,
                     RuntimeHandle {

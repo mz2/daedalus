@@ -48,3 +48,43 @@ async fn restart_reconciles_lost_sessions_without_losing_history() {
     );
     assert!(restarted.store().list_events(id).unwrap().len() > events_before);
 }
+
+/// Guards reconciliation's writer choice (`set_session_status`, NOT the canonical
+/// `set_session_state`): a session blocked on the operator that loses contact and is later
+/// restored must keep its full waiting state. `set_session_state` would NULL the waiting
+/// columns on the `Unknown` transition (Unknown is not a waiting state), so the restore
+/// could not re-derive the prompt/anchor — reconciliation deliberately uses the status-only
+/// writer to preserve `pending_prompt` + `waiting_since` (and `last_known_status`) across the
+/// round-trip (FR-020).
+#[tokio::test]
+async fn unknown_restore_preserves_a_waiting_sessions_prompt_and_anchor() {
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let id = fx.core.start_session(fx.fresh_request(tool)).await.unwrap();
+    fx.core
+        .mark_waiting_for_input(id, "Which database?")
+        .unwrap();
+    let waiting = fx.app.session(id).unwrap().session;
+    let anchor = waiting.waiting_since.expect("waiting anchor set");
+
+    // Contact lost: Unknown, last-known preserved, waiting columns intact.
+    fx.core.mark_connection_lost(id).unwrap();
+    let unknown = fx.app.session(id).unwrap().session;
+    assert_eq!(unknown.status, SessionStatus::Unknown);
+    assert_eq!(
+        unknown.last_known_status,
+        Some(SessionStatus::WaitingForInput)
+    );
+    assert_eq!(unknown.pending_prompt.as_deref(), Some("Which database?"));
+    assert_eq!(unknown.waiting_since, Some(anchor));
+
+    // Contact restored (the live runtime handle keeps the env reachable): the preserved
+    // WaitingForInput state — prompt + anchor included — is re-derived.
+    let corrected = fx.core.reconcile().await.unwrap();
+    assert_eq!(corrected, 1);
+    let restored = fx.app.session(id).unwrap().session;
+    assert_eq!(restored.status, SessionStatus::WaitingForInput);
+    assert_eq!(restored.last_known_status, None);
+    assert_eq!(restored.pending_prompt.as_deref(), Some("Which database?"));
+    assert_eq!(restored.waiting_since, Some(anchor));
+}

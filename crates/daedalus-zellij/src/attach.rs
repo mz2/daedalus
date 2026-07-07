@@ -125,3 +125,59 @@ impl TerminalAttach for InMemoryTerminal {
         })
     }
 }
+
+/// A synthetic *live* terminal for local testing (Principle III): attaching yields a real
+/// stream of agent-like output that arrives over a few seconds, rather than a pre-seeded
+/// replay. It is the legitimate local-testing path for the surface's capture pipeline (the
+/// `fake` backend), demonstrating redaction and waiting-for-input detection end-to-end
+/// without a real PTY / zellij.
+///
+/// The scripted sequence deliberately includes a line carrying a fake secret
+/// (`export API_KEY=sk-demo-123456`), so the core redactor is exercised, and a trailing
+/// prompt line so a tool declaring a matching prompt convention is surfaced as
+/// waiting-for-input (FR-015b).
+#[derive(Default)]
+pub struct ScriptedLiveTerminal;
+
+impl ScriptedLiveTerminal {
+    /// Create a scripted live terminal.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// The scripted agent-like output lines (each emitted with a small delay on attach).
+    /// The fake secret and the trailing prompt are load-bearing for the demo.
+    fn script() -> Vec<&'static [u8]> {
+        vec![
+            b"Starting agent...\n",
+            b"Cloning workspace...\n",
+            b"Installing dependencies...\n",
+            b"export API_KEY=sk-demo-123456\n",
+            b"Building project...\n",
+            b"All tests passed.\n",
+            b"Proceed with deployment? [y/N] \n",
+        ]
+    }
+}
+
+#[async_trait]
+impl TerminalAttach for ScriptedLiveTerminal {
+    async fn attach(&self, _session: SessionId) -> Result<TerminalChannel, AttachError> {
+        let (out_tx, out_rx) = mpsc::channel(1024);
+        let (in_tx, _in_rx) = mpsc::channel(1024);
+        tokio::spawn(async move {
+            for line in Self::script() {
+                // A short delay so the stream is genuinely live (arrives over ~2.8s).
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                if out_tx.send(Bytes::from_static(line)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(TerminalChannel {
+            output: out_rx,
+            input: in_tx,
+        })
+    }
+}

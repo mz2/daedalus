@@ -16,14 +16,16 @@ use gpui_component::{button::Button, button::ButtonVariants};
 use gpui_component::{h_flex, v_flex, Disableable, IconName, Root, StyledExt, TitleBar};
 use gpui_platform::application;
 use gpui_terminal::{ColorPalette, TerminalConfig, TerminalView};
-use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use tokio::runtime::Handle;
 
+use std::io::{self, Read, Write};
+
+use bytes::Bytes;
 use daedalus_app::{App, AppQuery, AppQueryAsync, Command};
 use daedalus_proto::{
     ArtifactRef, Availability, BackendKind, Capabilities, DiscoveredSession, InvocationSpec,
-    Objective, ObjectiveId, Origin, SessionId, SessionStatus, StartSessionRequest, TaskStatus,
-    ToolDef, ToolId, WorktreeRef,
+    Objective, ObjectiveId, Origin, PromptConvention, SessionId, SessionStatus,
+    StartSessionRequest, TaskStatus, ToolDef, ToolId, WorktreeRef,
 };
 
 use crate::app::{HostsIndicator, NavItem, StatusCounts};
@@ -232,7 +234,11 @@ fn ensure_tool(app: &App) {
         },
         capabilities: Capabilities {
             accepts_interactive_input: true,
-            prompt_convention: None,
+            // Recognise the scripted live terminal's trailing prompt so a blocked agent is
+            // surfaced as waiting-for-input (FR-015b) on the fake local-testing path.
+            prompt_convention: Some(PromptConvention::PromptPattern(
+                r"(?i)(Proceed with .*\?)".to_string(),
+            )),
         },
     };
     // An Err means the tool already exists from a previous launch — fine either way.
@@ -264,11 +270,12 @@ struct AppRoot {
     // not re-scan the fleet on every paint.
     counts: StatusCounts,
     needs: NeedsView,
-    // The embedded terminal for the open session (a real PTY via a shell); the PTY handles
-    // are held so the pty/child stay alive while the terminal is shown.
+    // The embedded terminal for the open session: renders the core's **redacted** capture
+    // stream (via `App::attach`), and routes operator keystrokes back as `SendInput`.
     terminal: Option<Entity<TerminalView>>,
-    pty: Option<PtyPair>,
-    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    // A stated not-attachable reason when the attach failed (contract C-T2 — never a silent
+    // blank / a local shell fallback).
+    terminal_error: Option<SharedString>,
     // Deep-link focus for the open session (answer mode, T078); cleared on plain opens.
     session_focus: Option<SessionFocus>,
     // The last dispatched-command failure, shown as a dismissable banner in the shell
@@ -402,8 +409,7 @@ impl AppRoot {
             counts,
             needs,
             terminal: None,
-            pty: None,
-            child: None,
+            terminal_error: None,
             session_focus: None,
             last_error: None,
             focus_handle: cx.focus_handle(),
@@ -432,37 +438,107 @@ impl AppRoot {
         cx.notify();
     }
 
-    /// Open a session's detail and start an embedded terminal (a shell in a real PTY).
-    fn open_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        self.open_session_focused(id, None, cx);
+    /// Open a session's detail and attach its embedded terminal to the core capture stream.
+    fn open_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_session_focused(id, None, window, cx);
     }
 
     /// Open a session's detail via a deep link, landing with answer-mode focus (T078).
+    ///
+    /// Attaching drives the real core capture path (`App::attach` → redact → persist →
+    /// observe → stream). The returned **redacted** output is bridged onto the terminal
+    /// view's reader; operator keystrokes are routed back through `Command::SendInput`
+    /// (never a local shell, never a raw PTY). A non-attachable session shows its stated
+    /// reason instead of a blank pane (contract C-T2).
     fn open_session_focused(
         &mut self,
         id: SessionId,
         focus: Option<SessionFocus>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.session_focus = focus;
         self.view = View::Session(id);
         self.sample_usage(id);
         self.close_terminal();
-        if let Some((view, pair, child)) = spawn_terminal(cx) {
-            self.terminal = Some(view);
-            self.pty = Some(pair);
-            self.child = Some(child);
+
+        // Answer-mode deep link (T078, Part D / FR-021a): when the session is genuinely
+        // waiting for input, honor the computed `SessionView.with_focus(...)` by retitling
+        // the send field's placeholder to the answer-mode text and focusing it.
+        if self.session_focus == Some(SessionFocus::AnswerPrompt) {
+            if let Some(vm) = SessionView::build(&self.app, id, &self.palette)
+                .map(|vm| vm.with_focus(self.session_focus))
+            {
+                if vm.focus_target == Some(SessionFocus::AnswerPrompt) {
+                    let placeholder = vm.input_placeholder.clone();
+                    self.inputs.send.update(cx, |st, cx| {
+                        st.set_placeholder(placeholder, window, cx);
+                        st.focus(window, cx);
+                    });
+                }
+            }
         }
+
+        let app = self.app.clone();
+        let handle = self.handle.clone();
+        cx.spawn(async move |this, cx| {
+            // Attach off the render thread, then bridge the async redacted output onto a
+            // blocking reader the terminal view drains in its own thread.
+            let attached = handle
+                .spawn(async move {
+                    match app.attach(id).await {
+                        Ok(mut channel) => {
+                            let (tx, rx) = std::sync::mpsc::channel::<Bytes>();
+                            tokio::spawn(async move {
+                                while let Some(chunk) = channel.output.recv().await {
+                                    if tx.send(chunk).is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                            Ok(rx)
+                        }
+                        Err(e) => Err(e.to_string()),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // A newer open (or a navigation away) supersedes this attach.
+                if this.view != View::Session(id) {
+                    return;
+                }
+                match attached {
+                    Ok(Ok(rx)) => {
+                        let reader = ChannelReader::new(rx);
+                        let writer = CommandWriter::new(this.app.clone(), this.handle.clone(), id);
+                        let config = terminal_config();
+                        let view = cx.new(|cx| TerminalView::new(writer, reader, config, cx));
+                        this.terminal = Some(view);
+                        this.terminal_error = None;
+                    }
+                    Ok(Err(reason)) => {
+                        this.terminal = None;
+                        this.terminal_error = Some(SharedString::from(reason));
+                    }
+                    Err(join) => {
+                        this.terminal = None;
+                        this.terminal_error =
+                            Some(SharedString::from(format!("attach task failed: {join}")));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+
         cx.notify();
     }
 
-    /// Tear down the embedded terminal (closing the PTY exits its shell).
+    /// Tear down the embedded terminal (dropping the view drops its reader/writer bridge,
+    /// which ends the forwarding task when the core stream next yields).
     fn close_terminal(&mut self) {
         self.terminal = None;
-        self.pty = None;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-        }
+        self.terminal_error = None;
     }
 
     /// Dispatch a command, awaiting the result so a rejection is surfaced as a dismissable
@@ -916,8 +992,8 @@ impl AppRoot {
                 Button::new(SharedString::from(format!("needs-{}", row.session)))
                     .primary()
                     .label(row.action.label.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_session_focused(link.session, link.focus, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_session_focused(link.session, link.focus, window, cx);
                     })),
             );
             list = list.child(
@@ -1020,8 +1096,8 @@ impl AppRoot {
                 Button::new(SharedString::from(format!("open-{id}")))
                     .outline()
                     .label("Open")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_session(id, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_session(id, window, cx);
                     })),
             );
 
@@ -1153,7 +1229,9 @@ impl AppRoot {
                 .child(n)
         });
 
-        // Terminal pane: a live embedded terminal when open, else the captured-output tail.
+        // Terminal pane: a live embedded terminal rendering the core's REDACTED capture
+        // stream when attached; a stated not-attachable reason if the attach failed
+        // (contract C-T2 — never a silent blank); else the captured-output tail.
         let terminal_pane = if let Some(term) = &self.terminal {
             v_flex()
                 .gap_1()
@@ -1168,6 +1246,16 @@ impl AppRoot {
                         .bg(gpui::rgba(0x000000a0))
                         .child(term.clone()),
                 )
+        } else if let Some(reason) = &self.terminal_error {
+            v_flex().gap_1().child(section_label("Terminal")).child(
+                div()
+                    .w_full()
+                    .p_3()
+                    .rounded_md()
+                    .bg(gpui::rgba(0x00000040))
+                    .text_sm()
+                    .child(format!("Not attachable: {reason}")),
+            )
         } else {
             let output = self.app.core().session_output(id, 8192);
             v_flex()
@@ -1443,8 +1531,8 @@ impl AppRoot {
                     )))
                     .outline()
                     .label(row.session_ref.objective.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_session(link.session, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_session(link.session, window, cx);
                     })),
                 );
                 rows = rows.child(card().child(line));
@@ -1772,39 +1860,99 @@ impl AppRoot {
     }
 }
 
-/// Start a real PTY running a shell and wrap it in a terminal view.
-fn spawn_terminal(
-    cx: &mut Context<AppRoot>,
-) -> Option<(
-    Entity<TerminalView>,
-    PtyPair,
-    Box<dyn portable_pty::Child + Send + Sync>,
-)> {
-    let (cols, rows) = (100usize, 30usize);
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .ok()?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
-    let child = pair.slave.spawn_command(CommandBuilder::new(shell)).ok()?;
-    let reader = pair.master.try_clone_reader().ok()?;
-    let writer = pair.master.take_writer().ok()?;
-    let config = TerminalConfig {
-        cols,
-        rows,
+/// The embedded terminal view configuration (fixed cell grid + present monospace font).
+fn terminal_config() -> TerminalConfig {
+    TerminalConfig {
+        cols: 100,
+        rows: 30,
         font_family: mono_family().to_string(),
         font_size: px(13.0),
         line_height_multiplier: 1.0,
         scrollback: 5000,
         padding: Edges::all(px(6.0)),
         colors: ColorPalette::default(),
-    };
-    let view = cx.new(|cx| TerminalView::new(writer, reader, config, cx));
-    Some((view, pair, child))
+    }
+}
+
+/// A blocking [`Read`] bridge from the core's async redacted-output channel onto the
+/// terminal view's reader thread. The `gpui-terminal` reader runs in a dedicated `std`
+/// thread and blocks on `read`, so a blocking `std::sync::mpsc::Receiver` is the correct
+/// primitive: a tokio task drains the `App::attach` output and forwards each redacted chunk
+/// here. Never carries a raw PTY — only the already-redacted stream from the core.
+struct ChannelReader {
+    rx: std::sync::mpsc::Receiver<Bytes>,
+    buf: Bytes,
+    pos: usize,
+}
+
+impl ChannelReader {
+    fn new(rx: std::sync::mpsc::Receiver<Bytes>) -> Self {
+        Self {
+            rx,
+            buf: Bytes::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl Read for ChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // Block until the current buffer has bytes, refilling from the channel. An empty
+        // chunk is skipped (never treated as EOF); a closed channel is EOF (Ok(0)).
+        while self.pos >= self.buf.len() {
+            match self.rx.recv() {
+                Ok(chunk) => {
+                    self.buf = chunk;
+                    self.pos = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = (self.buf.len() - self.pos).min(out.len());
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// A [`Write`] bridge that routes operator keystrokes from the terminal view back through
+/// the surface command path as [`Command::SendInput`] (FR-023) — keeping the surface
+/// boundary: the surface issues a command; the core decides delivery / acceptance.
+struct CommandWriter {
+    app: App,
+    handle: Handle,
+    session: SessionId,
+}
+
+impl CommandWriter {
+    fn new(app: App, handle: Handle, session: SessionId) -> Self {
+        Self {
+            app,
+            handle,
+            session,
+        }
+    }
+}
+
+impl Write for CommandWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let bytes = Bytes::copy_from_slice(data);
+        let app = self.app.clone();
+        let session = self.session;
+        self.handle.spawn(async move {
+            let _ = app
+                .execute(Command::SendInput {
+                    session,
+                    data: bytes,
+                })
+                .await;
+        });
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// A labelled form field: label above, control below.

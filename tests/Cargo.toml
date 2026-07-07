@@ -67,6 +67,9 @@ path = "unit/proto_attention.rs"
 
 # Integration tests.
 [[test]]
+name = "integration_attach"
+path = "integration/attach.rs"
+[[test]]
 name = "integration_start_session"
 path = "integration/start_session.rs"
 [[test]]

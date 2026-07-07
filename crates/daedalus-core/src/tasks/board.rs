@@ -52,7 +52,7 @@ impl Core {
         if all_done {
             if let Ok(next) = transition(session.status, Trigger::AllTasksDone) {
                 self.store
-                    .set_session_status(id, next, Some(clock::now()), None)?;
+                    .set_session_state(id, next, Some(clock::now()), None, None, None)?;
                 self.record_lifecycle(id, next, None);
             }
         }

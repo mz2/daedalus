@@ -1519,6 +1519,7 @@ dependencies = [
 name = "daedalus-desktop"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "daedalus-app",
  "daedalus-backend",
  "daedalus-backend-fake",
@@ -1533,7 +1534,6 @@ dependencies = [
  "gpui-component-assets",
  "gpui-terminal",
  "gpui_platform",
- "portable-pty",
  "tokio",
  "tracing",
  "tracing-subscriber",

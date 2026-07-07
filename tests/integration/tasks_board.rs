@@ -46,6 +46,46 @@ async fn all_tasks_done_completes_a_waiting_for_input_session() {
     );
 }
 
+/// Completing from a waiting state clears the now-stale waiting columns: a session that was
+/// `WaitingForInput` (so it carries a `pending_prompt` + `waiting_since`) and then finishes
+/// all its tasks lands in `Completed` with BOTH columns NULLed — the board goes through the
+/// canonical `set_session_state` writer, which normalizes the waiting columns from the target
+/// (non-waiting) status so no stale prompt/anchor lingers on the finished session.
+#[tokio::test]
+async fn completing_from_a_waiting_state_clears_the_stale_waiting_columns() {
+    let fx = Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let req = fx.fresh_request(tool);
+    let objective = req.objective.clone();
+    fx.write_tasks(&objective, "- [x] T001 Setup\n- [ ] T002 Implement\n");
+    let id = fx.core.start_session(req).await.unwrap();
+    fx.core.refresh_task_board(id).unwrap();
+
+    // Block on a question, so pending_prompt + waiting_since are set.
+    fx.core
+        .mark_waiting_for_input(id, "Continue? (y/n)")
+        .unwrap();
+    let waiting = fx.app.session(id).unwrap().session;
+    assert_eq!(waiting.status, SessionStatus::WaitingForInput);
+    assert_eq!(waiting.pending_prompt.as_deref(), Some("Continue? (y/n)"));
+    assert!(waiting.waiting_since.is_some());
+
+    // Finish the remaining task while still waiting → completion.
+    fx.write_tasks(&objective, "- [x] T001 Setup\n- [x] T002 Implement\n");
+    fx.core.refresh_task_board(id).unwrap();
+
+    let done = fx.app.session(id).unwrap().session;
+    assert_eq!(done.status, SessionStatus::Completed);
+    assert_eq!(
+        done.pending_prompt, None,
+        "completion clears the stale pending prompt"
+    );
+    assert_eq!(
+        done.waiting_since, None,
+        "completion clears the stale waiting anchor"
+    );
+}
+
 /// A `Starting` session with an all-done board must NOT be spuriously completed: the state
 /// machine rejects `(Starting, AllTasksDone)`, so the board leaves it untouched.
 #[tokio::test]

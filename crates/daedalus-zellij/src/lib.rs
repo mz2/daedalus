@@ -7,8 +7,8 @@
 pub mod attach;
 
 pub use attach::{
-    list_local_sessions, AttachError, ByteSink, ByteStream, InMemoryTerminal, TerminalAttach,
-    TerminalChannel,
+    list_local_sessions, AttachError, ByteSink, ByteStream, InMemoryTerminal, ScriptedLiveTerminal,
+    TerminalAttach, TerminalChannel,
 };
 
 /// The name prefix that marks a zellij session as Daedalus-managed (used when naming

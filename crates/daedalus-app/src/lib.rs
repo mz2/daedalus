@@ -41,6 +41,16 @@ impl App {
         self.core.subscribe()
     }
 
+    /// Attach to a session's live terminal and drive the core capture pipeline, returning a
+    /// duplex channel whose `output` is the **redacted** stream for the surface to render
+    /// (FR-016/018). Mirrors [`Self::subscribe`]: a method returning a channel, not a
+    /// [`Command`] variant — all capture/redaction/persistence stays in the core, the
+    /// surface only consumes the stream. A non-attachable session returns a stated reason
+    /// (contract `terminal-attach.md`, C-T2) rather than a silent blank.
+    pub async fn attach(&self, id: SessionId) -> Result<daedalus_core::TerminalChannel, CoreError> {
+        self.core.attach_and_capture(id).await
+    }
+
     /// Execute an operator command (FR-006). Every capability is reachable here (C-A5).
     pub async fn execute(&self, command: Command) -> Result<CommandResult, CoreError> {
         match command {

@@ -33,21 +33,30 @@ const SENSITIVE_KEYS: &[&str] = &[
 /// Redact secret-shaped content from a UTF-8 string.
 #[must_use]
 pub fn redact_str(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
     let mut in_private_key_block = false;
+    redact_span(input, &mut in_private_key_block)
+}
+
+/// Redact one span of text, carrying the private-key-block state in/out via
+/// `in_private_key_block`. The stateless [`redact_str`] passes a fresh `false`; the
+/// stateful [`Redactor`] threads its own field so a PEM block split across chunks stays
+/// redacted. The redaction *policy* is identical to the original per-string pass — only
+/// the ownership of the block flag differs.
+fn redact_span(input: &str, in_private_key_block: &mut bool) -> String {
+    let mut out = String::with_capacity(input.len());
 
     for line in input.split_inclusive('\n') {
         let trimmed = line.trim_end_matches(['\n', '\r']);
 
         // PEM / private-key blocks: redact the whole body between BEGIN/END markers.
         if trimmed.contains("-----BEGIN") && trimmed.contains("PRIVATE KEY-----") {
-            in_private_key_block = true;
+            *in_private_key_block = true;
             out.push_str(line);
             continue;
         }
-        if in_private_key_block {
+        if *in_private_key_block {
             if trimmed.contains("-----END") && trimmed.contains("PRIVATE KEY-----") {
-                in_private_key_block = false;
+                *in_private_key_block = false;
                 out.push_str(line);
             } else {
                 push_redacted_line(&mut out, line, trimmed);
@@ -146,6 +155,108 @@ fn looks_like_secret_token(word: &str) -> bool {
 pub fn redact_bytes(input: &[u8]) -> Bytes {
     let text = String::from_utf8_lossy(input);
     Bytes::from(redact_str(&text).into_bytes())
+}
+
+/// A stateful, streaming redactor that buffers across PTY chunks so that neither UTF-8
+/// codepoints, output lines, nor PEM blocks are ever split at an arbitrary byte boundary.
+///
+/// The stateless [`redact_bytes`]/[`redact_str`] pass frames on whatever bytes a single
+/// chunk happens to contain, which lets secrets leak when a `KEY=VALUE`, a PEM body, or a
+/// prompt pattern straddles two chunks, and corrupts multi-byte UTF-8 split across a
+/// boundary (permanent U+FFFD in the persisted capture). `Redactor` fixes the *framing*
+/// while reusing the exact same redaction *policy* via [`redact_span`]:
+///
+/// * bytes forming an incomplete trailing UTF-8 sequence are held until completed;
+/// * text is emitted only up to the last complete line (newline), the partial trailing
+///   line staying buffered;
+/// * the private-key-block flag is carried across [`push`](Self::push) calls.
+///
+/// [`flush`](Self::flush) drains whatever partial line/bytes remain when the stream ends.
+#[derive(Debug, Default)]
+pub struct Redactor {
+    /// Bytes of an incomplete trailing UTF-8 sequence awaiting continuation bytes.
+    pending_bytes: Vec<u8>,
+    /// Decoded but not-yet-terminated trailing line (no newline seen yet).
+    pending_line: String,
+    /// Whether we are currently inside a `-----BEGIN…PRIVATE KEY-----` block.
+    in_private_key_block: bool,
+}
+
+impl Redactor {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one raw chunk; returns the redacted bytes of every line completed by this
+    /// chunk (may be empty if the chunk did not complete a line).
+    pub fn push(&mut self, chunk: &[u8]) -> Bytes {
+        self.pending_bytes.extend_from_slice(chunk);
+        let decoded = self.take_decodable_prefix();
+        self.pending_line.push_str(&decoded);
+
+        // Emit only up to the last complete line; keep the partial tail buffered.
+        match self.pending_line.rfind('\n') {
+            Some(idx) => {
+                let complete: String = self.pending_line.drain(..=idx).collect();
+                let redacted = redact_span(&complete, &mut self.in_private_key_block);
+                Bytes::from(redacted.into_bytes())
+            }
+            None => Bytes::new(),
+        }
+    }
+
+    /// Emit whatever partial line / trailing bytes remain (the stream has ended), so no
+    /// output is lost. Any still-incomplete UTF-8 tail is decoded lossily at this point.
+    pub fn flush(&mut self) -> Bytes {
+        if !self.pending_bytes.is_empty() {
+            let tail = String::from_utf8_lossy(&self.pending_bytes);
+            self.pending_line.push_str(&tail);
+            self.pending_bytes.clear();
+        }
+        if self.pending_line.is_empty() {
+            return Bytes::new();
+        }
+        let remainder = std::mem::take(&mut self.pending_line);
+        let redacted = redact_span(&remainder, &mut self.in_private_key_block);
+        Bytes::from(redacted.into_bytes())
+    }
+
+    /// Drain the valid-UTF-8 prefix of `pending_bytes`, leaving only an incomplete trailing
+    /// codepoint's bytes buffered. Genuinely invalid byte sequences are replaced with
+    /// U+FFFD (matching lossy decoding) rather than buffered forever.
+    fn take_decodable_prefix(&mut self) -> String {
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending_bytes) {
+                Ok(valid) => {
+                    out.push_str(valid);
+                    self.pending_bytes.clear();
+                    return out;
+                }
+                Err(e) => {
+                    let valid_up_to = e.valid_up_to();
+                    // The prefix up to `valid_up_to` is guaranteed valid UTF-8.
+                    out.push_str(
+                        std::str::from_utf8(&self.pending_bytes[..valid_up_to])
+                            .expect("valid_up_to prefix is valid UTF-8"),
+                    );
+                    match e.error_len() {
+                        // Incomplete trailing sequence: keep the tail for the next chunk.
+                        None => {
+                            self.pending_bytes.drain(..valid_up_to);
+                            return out;
+                        }
+                        // Genuinely invalid bytes: emit a replacement and continue.
+                        Some(bad) => {
+                            out.push('\u{FFFD}');
+                            self.pending_bytes.drain(..valid_up_to + bad);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

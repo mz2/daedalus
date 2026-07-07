@@ -687,8 +687,18 @@ impl Store {
         collect_lenient(rows, "session")
     }
 
-    /// Update a session's status (and optionally a reason/end timestamp). A `reason` is
-    /// stored as a reason-only [`Outcome`]; `None` keeps any existing outcome.
+    /// Update a session's status (and optionally a reason/end timestamp) **without** touching
+    /// the waiting/attention columns (`pending_prompt`, `waiting_since`). A `reason` is stored
+    /// as a reason-only [`Outcome`]; `None` keeps any existing `terminal_outcome`.
+    ///
+    /// This is deliberately NOT the canonical lifecycle writer — for an ordinary status
+    /// transition use [`Store::set_session_state`], which additionally normalizes the waiting
+    /// columns and `terminal_outcome` from the target state. This status-only variant exists
+    /// for reconciliation's `Unknown`/restore round-trip (FR-020), where a session's waiting
+    /// state (its pending prompt + anchor) MUST survive the loss-of-contact transition and be
+    /// re-derived on reconnect — normalizing (i.e. clearing) those columns here would lose
+    /// them. It leaves `last_known_status` untouched too (that is
+    /// [`Store::set_session_last_known`]'s job).
     pub fn set_session_status(
         &self,
         id: SessionId,
@@ -697,17 +707,6 @@ impl Store {
         reason: Option<&str>,
     ) -> Result<(), StoreError> {
         let outcome = reason.map(Outcome::reason);
-        self.set_session_status_with_outcome(id, status, ended_at, outcome.as_ref())
-    }
-
-    /// Update a session's status with a full [`Outcome`] (exit code + summary — FR-015a).
-    pub fn set_session_status_with_outcome(
-        &self,
-        id: SessionId,
-        status: SessionStatus,
-        ended_at: Option<Timestamp>,
-        outcome: Option<&Outcome>,
-    ) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("poisoned");
         conn.execute(
             "UPDATE sessions SET status = ?2, ended_at = COALESCE(?3, ended_at), terminal_outcome = COALESCE(?4, terminal_outcome) WHERE id = ?1",
@@ -715,16 +714,19 @@ impl Store {
                 id.to_string(),
                 enum_to_text(&status)?,
                 ended_at.map(|t| t.millis()),
-                outcome.map(serde_json::to_string).transpose()?,
+                outcome.as_ref().map(serde_json::to_string).transpose()?,
             ),
         )?;
         Ok(())
     }
 
-    /// Transition a session's lifecycle atomically: write the status (+ optional
-    /// `ended_at`/`outcome`) AND normalize the waiting/attention columns and
-    /// `terminal_outcome` from the TARGET status, all in one statement so a concurrent
-    /// reader never observes a torn intermediate state (P4).
+    /// **The canonical status-transition writer.** Transition a session's lifecycle
+    /// atomically: write the status (+ optional `ended_at`/`outcome`) AND normalize the
+    /// waiting/attention columns and `terminal_outcome` from the TARGET status, all in one
+    /// statement so a concurrent reader never observes a torn intermediate state (P4). Every
+    /// ordinary lifecycle transition goes through here so the waiting columns and outcome are
+    /// derived uniformly from the destination state (the sole exception is reconciliation —
+    /// see [`Store::set_session_status`]).
     ///
     /// The waiting columns are derived from `status` — subsuming S2 (any exit out of a
     /// waiting state clears them) and keeping future exits correct:

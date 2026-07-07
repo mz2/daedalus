@@ -31,7 +31,8 @@ use daedalus_proto::{
     EventPayload, EventRecord, Origin, RedactedBytes, ResourceUsageMetric, Session, SessionDetail,
     SessionId, SessionStatus, ToolId, TrackedTask,
 };
-use daedalus_zellij::{TerminalAttach, TerminalChannel};
+use daedalus_zellij::TerminalAttach;
+pub use daedalus_zellij::TerminalChannel;
 
 pub use backends::BackendRegistry;
 pub use persist::{Store, StoreError};
@@ -488,25 +489,51 @@ impl Core {
         let core = Arc::clone(self);
         let mut output = channel.output;
         tokio::spawn(async move {
-            while let Some(chunk) = output.recv().await {
-                let redacted = redact::redact_bytes(&chunk);
-                let _ = core.store.append_output(id, clock::now(), &redacted);
-                // Waiting-for-input detection over the observed (redacted) stream.
-                let _ = core.observe_output(id, &String::from_utf8_lossy(&redacted));
-                let _ = core.events.send(AppEvent::Output {
-                    id,
-                    chunk: RedactedBytes(redacted.to_vec()),
-                });
-                if ui_tx.send(redacted).await.is_err() {
-                    break;
+            // One stateful redactor per attach: buffers across chunks so secrets, PEM
+            // blocks, prompt patterns, and multi-byte codepoints split at a PTY chunk
+            // boundary are handled on complete lines rather than leaking / corrupting.
+            let mut redactor = redact::Redactor::new();
+            'stream: while let Some(chunk) = output.recv().await {
+                let redacted = redactor.push(&chunk);
+                if !core.forward_redacted(id, &redacted, &ui_tx).await {
+                    break 'stream;
                 }
             }
+            // Stream ended: emit any buffered partial line so trailing output isn't lost.
+            let remainder = redactor.flush();
+            let _ = core.forward_redacted(id, &remainder, &ui_tx).await;
         });
 
         Ok(TerminalChannel {
             output: ui_rx,
             input: channel.input,
         })
+    }
+
+    /// Persist, observe, and forward one batch of already-redacted (line-complete) bytes.
+    /// Ordering is load-bearing (contract `terminal-attach.md`, exercised by
+    /// `tests/contract/terminal_attach.rs`): persist to the capture store **before** the
+    /// bytes are forwarded to the surface or event stream. Empty batches (a chunk that did
+    /// not complete a line) are skipped. Returns `false` when the surface channel closed.
+    async fn forward_redacted(
+        &self,
+        id: SessionId,
+        redacted: &Bytes,
+        ui_tx: &mpsc::Sender<Bytes>,
+    ) -> bool {
+        if redacted.is_empty() {
+            return true;
+        }
+        // 1) Persist first (record-before-forward).
+        let _ = self.store.append_output(id, clock::now(), redacted);
+        // 2) Waiting-for-input detection over the observed (redacted, line-complete) stream.
+        let _ = self.observe_output(id, &String::from_utf8_lossy(redacted));
+        // 3) Fan out to the event stream, then the surface channel.
+        let _ = self.events.send(AppEvent::Output {
+            id,
+            chunk: RedactedBytes(redacted.to_vec()),
+        });
+        ui_tx.send(redacted.clone()).await.is_ok()
     }
 }
 
