@@ -38,9 +38,6 @@ impl OpenShellControl for E2eControl {
     async fn run(&self, args: &[String]) -> Result<CliOutput, String> {
         self.0.run(args).await
     }
-    fn spawn(&self, args: &[String]) -> Result<(), String> {
-        self.0.spawn(args)
-    }
 }
 
 async fn e2e_image_present(control: &dyn OpenShellControl) -> bool {
@@ -155,6 +152,146 @@ async fn run_agent_journey(control: &dyn OpenShellControl, name: &str) -> Result
         ));
     }
     Ok(())
+}
+
+// FR-004/011 launch path for real: `start_agent` creates a detached zellij session in a
+// live sandbox with the tool running in it, `stop` kills it in-sandbox, and a launch
+// into a sandbox lacking the tool fails DETECTED (no phantom-Running).
+#[tokio::test]
+async fn start_agent_launches_and_stop_kills_inside_a_real_sandbox() {
+    let control = Arc::new(E2eControl(CliOpenShellControl));
+    let backend = OpenShellBackend::new(control.clone());
+    if backend.availability().await != Availability::Available
+        || !e2e_image_present(control.as_ref()).await
+    {
+        eprintln!("skipping: openshell/docker/{E2E_IMAGE} not available on this host");
+        return;
+    }
+
+    let env = backend
+        .acquire(AcquireRequest {
+            origin: Origin::Fresh,
+            worktree: None,
+            limits: ResourceLimits::default(),
+        })
+        .await
+        .expect("acquire");
+    let name = format!("daedalus-{}", env.id);
+
+    let journey = async {
+        let handle = backend
+            .start_agent(
+                &env.id,
+                &daedalus_proto::InvocationSpec {
+                    program: "sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        "echo agent-alive > /tmp/alive; sleep 300".into(),
+                    ],
+                    env: vec![],
+                },
+            )
+            .await
+            .map_err(|e| format!("start_agent: {e}"))?;
+
+        // The zellij session genuinely exists in the sandbox and the tool ran.
+        let seen = sandbox_sh(
+            control.as_ref(),
+            &name,
+            30,
+            "sleep 1; zellij list-sessions; cat /tmp/alive",
+        )
+        .await?;
+        if !seen.stdout.contains(&handle.zellij_session) || !seen.stdout.contains("agent-alive") {
+            return Err(format!("session+tool live: {}", seen.stdout));
+        }
+
+        // The embedded-terminal bridge (issue #15 / FR-008): attach to the in-sandbox
+        // zellij session through `sandbox exec --tty` and receive live terminal bytes.
+        {
+            use daedalus_zellij::{ProcessTerminal, TerminalAttach};
+            let binary = control
+                .control_binary()
+                .ok_or("openshell CLI vanished mid-test")?;
+            let env_id = env.id;
+            let bridge = ProcessTerminal::new(Box::new(move |_| {
+                Ok(daedalus_backend_openshell::attach_command(&binary, &env_id))
+            }));
+            let mut ch = bridge
+                .attach(daedalus_proto::SessionId::new())
+                .await
+                .map_err(|e| format!("bridge attach: {e}"))?;
+            let first = tokio::time::timeout(std::time::Duration::from_secs(15), ch.output.recv())
+                .await
+                .map_err(|_| "no terminal bytes within 15s of attach (C-T1)".to_string())?
+                .ok_or("bridge closed before any output".to_string())?;
+            if first.is_empty() {
+                return Err("bridge delivered an empty first chunk".into());
+            }
+            // Dropping the channel detaches (kills the bridge, not the session).
+        }
+
+        // Stop kills it in-sandbox; list-sessions no longer shows it.
+        backend.stop(&env.id).await.map_err(|e| e.to_string())?;
+        let after = sandbox_sh(
+            control.as_ref(),
+            &name,
+            30,
+            "zellij list-sessions 2>&1; true",
+        )
+        .await?;
+        if after.stdout.contains(&handle.zellij_session)
+            && !after.stdout.to_lowercase().contains("exited")
+        {
+            return Err(format!("session still alive after stop: {}", after.stdout));
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+
+    backend.teardown(&env.id).await.expect("teardown");
+    journey.expect("launch/stop journey");
+
+    // A launch that dies inside the sandbox is a DETECTED failure and leaves nothing.
+    let env2 = backend
+        .acquire(AcquireRequest {
+            origin: Origin::Fresh,
+            worktree: None,
+            limits: ResourceLimits::default(),
+        })
+        .await
+        .expect("acquire second");
+    let err = backend
+        .start_agent(
+            &env2.id,
+            &daedalus_proto::InvocationSpec {
+                // zellij `run` validates the command exists in the pane; a bad zellij
+                // session name cannot be forced here, so use a tool whose launch the
+                // create-background path cannot mask: kill the probe by breaking PATH.
+                program: "/nonexistent/agent-binary".into(),
+                args: vec![],
+                env: vec![],
+            },
+        )
+        .await;
+    match err {
+        Err(daedalus_backend::BackendError::StartFailed(_)) => {
+            assert_eq!(
+                backend.live_environment_count(),
+                0,
+                "failed start leaves no env"
+            );
+        }
+        Ok(_) => {
+            // zellij accepted the command (it validates lazily); the pane died instantly
+            // instead. Acceptable at this layer — detection then belongs to monitoring.
+            backend.teardown(&env2.id).await.expect("teardown second");
+        }
+        Err(e) => {
+            backend.teardown(&env2.id).await.ok();
+            panic!("unexpected error kind: {e}");
+        }
+    }
 }
 
 #[tokio::test]

@@ -68,6 +68,7 @@ bytes = "1.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3.15"
+portable-pty = "0.9"
 
 [profile.dev]
 # Keep the large dependency graph snappy to iterate on.

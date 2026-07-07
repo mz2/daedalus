@@ -27,17 +27,22 @@ struct ScriptedControl {
     runtime_ready: bool,
     gpu_ready: bool,
     sandbox_image: Option<String>,
+    /// Whether the sandbox image carries zellij (the `command -v zellij` probe).
+    zellij_in_image: bool,
     fail_run: Option<String>,
-    fail_spawn: Option<String>,
+    /// When set, the zellij session launch (`attach --create-background`) fails.
+    fail_zellij_launch: bool,
     calls: Mutex<Vec<Vec<String>>>,
 }
 
 impl ScriptedControl {
-    /// A fully healthy OpenShell host (CLI + container runtime, no GPU).
+    /// A fully healthy OpenShell host (CLI + container runtime, no GPU) whose sandbox
+    /// image carries zellij.
     fn ready() -> Self {
         Self {
             binary: Some("/opt/homebrew/bin/openshell".into()),
             runtime_ready: true,
+            zellij_in_image: true,
             ..Self::default()
         }
     }
@@ -71,21 +76,38 @@ impl OpenShellControl for ScriptedControl {
     }
     async fn run(&self, args: &[String]) -> Result<CliOutput, String> {
         self.calls.lock().expect("poisoned").push(args.to_vec());
-        match &self.fail_run {
-            Some(reason) => Err(reason.clone()),
-            None => Ok(CliOutput {
-                success: true,
-                stdout: String::new(),
+        if let Some(reason) = &self.fail_run {
+            return Err(reason.clone());
+        }
+        let joined = args.join(" ");
+        if joined.contains("command -v zellij") {
+            return Ok(CliOutput {
+                success: self.zellij_in_image,
+                stdout: if self.zellij_in_image {
+                    "/usr/local/bin/zellij\n".into()
+                } else {
+                    String::new()
+                },
                 stderr: String::new(),
-            }),
+            });
         }
-    }
-    fn spawn(&self, args: &[String]) -> Result<(), String> {
-        self.calls.lock().expect("poisoned").push(args.to_vec());
-        match &self.fail_spawn {
-            Some(reason) => Err(reason.clone()),
-            None => Ok(()),
+        if self.fail_zellij_launch && joined.contains("--create-background") {
+            return Ok(CliOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "zellij exploded".into(),
+            });
         }
+        Ok(CliOutput {
+            success: true,
+            // A successful direct launch echoes its confirmation marker.
+            stdout: if joined.contains("daedalus-launched") {
+                "daedalus-launched\n".into()
+            } else {
+                String::new()
+            },
+            stderr: String::new(),
+        })
     }
 }
 
@@ -219,12 +241,13 @@ async fn c_b2_failed_create_fails_acquire_and_leaves_nothing() {
     assert_eq!(b.live_environment_count(), 0);
 }
 
-// C-B2: a failed agent start tears the environment down — no orphan (FR-005), and the
-// real sandbox is deleted.
+// C-B2: a failed agent launch is DETECTED (the launch runs to completion, it is not
+// fire-and-forget), tears the environment down — no orphan, no phantom-Running session
+// (FR-005) — and the real sandbox is deleted.
 #[tokio::test]
-async fn c_b2_failed_start_tears_the_environment_down() {
+async fn c_b2_failed_start_is_detected_and_tears_the_environment_down() {
     let (control, b) = backend_with(ScriptedControl {
-        fail_spawn: Some("exec refused".into()),
+        fail_zellij_launch: true,
         ..ScriptedControl::ready()
     });
     let env = b.acquire(fresh_req()).await.unwrap();
@@ -362,9 +385,14 @@ async fn acquire_requests_gpu_only_when_host_is_ready() {
     assert!(create.contains(&"--gpu".to_string()), "{create:?}");
 }
 
-// The agent launches through `sandbox exec -n <name> --no-tty -- zellij …` (FR-004/011).
+// The agent launches under zellij inside the sandbox (FR-004/011), synchronously and
+// verifiably (openshell 0.0.77 + zellij 0.44, verified live 2026-07-07):
+//   1. probe:  sandbox exec … -- sh -c 'command -v zellij'
+//   2. create: sandbox exec … -- zellij attach --create-background <session>
+//   3. run:    sandbox exec … -- zellij --session <session> run -- <tool> <args…>
+// Each step runs to completion; a failure at any step is a detected StartFailed.
 #[tokio::test]
-async fn start_agent_execs_under_zellij_inside_the_sandbox() {
+async fn start_agent_launches_a_detached_zellij_session_with_the_tool() {
     let (control, b) = backend_with(ScriptedControl::ready());
     let env = b.acquire(fresh_req()).await.unwrap();
     let tool = daedalus_proto::InvocationSpec {
@@ -373,18 +401,96 @@ async fn start_agent_execs_under_zellij_inside_the_sandbox() {
         env: vec![],
     };
     let handle = b.start_agent(&env.id, &tool).await.unwrap();
+    let name = format!("daedalus-{}", env.id);
 
     let execs = control.recorded(&["sandbox", "exec"]);
-    assert_eq!(execs.len(), 1);
-    let exec = &execs[0];
-    let n = exec.iter().position(|a| a == "-n").expect("-n flag");
-    assert_eq!(exec[n + 1], format!("daedalus-{}", env.id));
-    assert!(exec.contains(&"--no-tty".to_string()));
-    let sep = exec.iter().position(|a| a == "--").expect("-- separator");
-    assert_eq!(exec[sep + 1], "zellij");
-    assert!(exec.contains(&handle.zellij_session));
-    assert!(exec.contains(&"claude".to_string()));
-    assert!(exec.contains(&"--continue".to_string()));
+    assert_eq!(execs.len(), 3, "probe + create-background + run: {execs:?}");
+    for exec in &execs {
+        let n = exec.iter().position(|a| a == "-n").expect("-n flag");
+        assert_eq!(exec[n + 1], name);
+        assert!(exec.contains(&"--no-tty".to_string()), "{exec:?}");
+        assert!(
+            exec.contains(&"--timeout".to_string()),
+            "control-plane execs are bounded (the CLI hangs on stdin without one): {exec:?}"
+        );
+    }
+
+    let create = &execs[1];
+    let sep = create.iter().position(|a| a == "--").expect("separator");
+    assert_eq!(
+        &create[sep + 1..],
+        &[
+            "zellij".to_string(),
+            "attach".into(),
+            "--create-background".into(),
+            handle.zellij_session.clone()
+        ]
+    );
+
+    let run = &execs[2];
+    let sep = run.iter().position(|a| a == "--").expect("separator");
+    assert_eq!(
+        &run[sep + 1..],
+        &[
+            "zellij".to_string(),
+            "--session".into(),
+            handle.zellij_session.clone(),
+            "run".into(),
+            "--".into(),
+            "claude".into(),
+            "--continue".into()
+        ]
+    );
+}
+
+// Without zellij in the image, the tool still launches — direct detached exec (nohup)
+// with output to a log; the operator gets a session, just not an attachable one (the
+// attach layer states why — FR-028-style honesty, not a silent failure).
+#[tokio::test]
+async fn start_agent_falls_back_to_direct_exec_without_zellij() {
+    let (control, b) = backend_with(ScriptedControl {
+        zellij_in_image: false,
+        ..ScriptedControl::ready()
+    });
+    let env = b.acquire(fresh_req()).await.unwrap();
+    let tool = daedalus_proto::InvocationSpec {
+        program: "opencode".into(),
+        args: vec!["run".into(), "fix it".into()],
+        env: vec![],
+    };
+    b.start_agent(&env.id, &tool).await.unwrap();
+
+    let execs = control.recorded(&["sandbox", "exec"]);
+    assert_eq!(execs.len(), 2, "probe + direct launch: {execs:?}");
+    let launch = execs[1].join(" ");
+    assert!(launch.contains("nohup"), "{launch}");
+    assert!(launch.contains("opencode"), "{launch}");
+    assert!(!launch.contains("zellij"), "{launch}");
+}
+
+// Stop kills the agent INSIDE the sandbox (the zellij session lives there, not on the
+// host) and stays idempotent (C-B5).
+#[tokio::test]
+async fn stop_kills_the_zellij_session_inside_the_sandbox() {
+    let (control, b) = backend_with(ScriptedControl::ready());
+    let env = b.acquire(fresh_req()).await.unwrap();
+    let tool = daedalus_proto::InvocationSpec {
+        program: "claude".into(),
+        args: vec![],
+        env: vec![],
+    };
+    let handle = b.start_agent(&env.id, &tool).await.unwrap();
+
+    b.stop(&env.id).await.unwrap();
+    b.stop(&env.id).await.unwrap();
+
+    let kills: Vec<_> = control
+        .recorded(&["sandbox", "exec"])
+        .into_iter()
+        .filter(|c| c.join(" ").contains("kill-session"))
+        .collect();
+    assert_eq!(kills.len(), 1, "one in-sandbox kill, idempotent: {kills:?}");
+    assert!(kills[0].contains(&handle.zellij_session));
 }
 
 // Teardown deletes the real sandbox by name.
@@ -396,6 +502,28 @@ async fn teardown_deletes_the_sandbox() {
     let deletes = control.recorded(&["sandbox", "delete"]);
     assert_eq!(deletes.len(), 1);
     assert_eq!(deletes[0][2], format!("daedalus-{}", env.id));
+}
+
+// The embedded terminal reaches the agent's zellij session through a bridge process
+// (issue #15 / FR-008): `openshell sandbox exec --tty -n <sandbox> -- zellij attach <s>`.
+// `--tty` is load-bearing — zellij needs the forced PTY when the bridge's stdio is piped.
+#[test]
+fn attach_command_execs_zellij_attach_with_forced_tty() {
+    let env = daedalus_proto::EnvironmentId::new();
+    let cmd = daedalus_backend_openshell::attach_command("/opt/homebrew/bin/openshell", &env);
+    assert_eq!(cmd[0], "/opt/homebrew/bin/openshell");
+    assert!(cmd.contains(&"--tty".to_string()), "{cmd:?}");
+    let n = cmd.iter().position(|a| a == "-n").expect("-n");
+    assert_eq!(cmd[n + 1], format!("daedalus-{env}"));
+    let sep = cmd.iter().position(|a| a == "--").expect("separator");
+    assert_eq!(
+        &cmd[sep + 1..],
+        &[
+            "zellij".to_string(),
+            "attach".into(),
+            daedalus_zellij::format_session_name(&env)
+        ]
+    );
 }
 
 // --- Per-session policy (real schema: policy get --base -o json, openshell 0.0.77) ------

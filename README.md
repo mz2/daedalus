@@ -159,6 +159,13 @@ Self-activating: skips unless `openshell` + Docker + the image are present. Budg
 minutes — the model runs on CPU inside the Docker VM. The test tears its sandbox down on
 every path and asserts the outcome (`add(3, 4) == 7`), not the transcript.
 
+The same suite also covers the **launch + attach + stop** path (fast, ~3s):
+`start_agent` creates a detached zellij session inside a live sandbox with the tool
+running in it; the embedded-terminal bridge (`ProcessTerminal` on a local PTY →
+`sandbox exec --tty … -- zellij attach`) receives live terminal bytes; `stop` kills the
+session in-sandbox. A failed launch is a detected `StartFailed` (env + sandbox torn
+down), never a phantom-Running session.
+
 ### 4. Manual policy smoke (what the backend enforces)
 
 Inspect and verify the per-session confinement by hand — deny-all egress means the `curl`

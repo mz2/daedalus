@@ -61,11 +61,11 @@ pub trait OpenShellControl: Send + Sync {
     fn sandbox_image(&self) -> Option<String> {
         None
     }
-    /// Run a control-plane command (`sandbox create`/`delete`, …) to completion.
+    /// Run a control-plane command (`sandbox create`/`delete`/`exec`, …) to completion.
+    /// The agent itself is launched *detached inside the sandbox* (a background zellij
+    /// session or `nohup`), so even launch commands run to completion here — a failed
+    /// launch is a detected error, never a phantom-running session.
     async fn run(&self, args: &[String]) -> Result<CliOutput, String>;
-    /// Spawn a long-lived command detached — the agent's `sandbox exec` lives as long as
-    /// the session does and is never awaited here.
-    fn spawn(&self, args: &[String]) -> Result<(), String>;
 }
 
 /// Default control resolving the `openshell` CLI from `DAEDALUS_OPENSHELL_CMD` or `PATH`,
@@ -129,17 +129,6 @@ impl OpenShellControl for CliOpenShellControl {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
-
-    fn spawn(&self, args: &[String]) -> Result<(), String> {
-        let binary = self
-            .binary()
-            .ok_or_else(|| "openshell CLI gone".to_string())?;
-        tokio::process::Command::new(&binary)
-            .args(args)
-            .spawn()
-            .map(drop)
-            .map_err(|e| e.to_string())
-    }
 }
 
 fn which_on_path(bin: &str) -> Option<String> {
@@ -156,6 +145,26 @@ fn which_on_path(bin: &str) -> Option<String> {
 /// Where a pre-existing session's worktree lands inside the sandbox (FR-002a). Delivery
 /// into this path (upload vs driver-level bind) is tracked on issue #9.
 pub const WORKTREE_MOUNT: &str = "/sandbox/worktree";
+
+/// The bridge command whose stdio is a session's live terminal (issue #15 / FR-008):
+/// attach to the agent's in-sandbox zellij session, with `--tty` forcing the PTY the
+/// bridge needs when its own stdio is piped (zellij refuses to run without one).
+/// Feed this to a [`daedalus_zellij::ProcessTerminal`] resolver.
+#[must_use]
+pub fn attach_command(control_binary: &str, env: &EnvironmentId) -> Vec<String> {
+    vec![
+        control_binary.to_string(),
+        "sandbox".into(),
+        "exec".into(),
+        "--tty".into(),
+        "-n".into(),
+        format!("daedalus-{env}"),
+        "--".into(),
+        "zellij".into(),
+        "attach".into(),
+        daedalus_zellij::format_session_name(env),
+    ]
+}
 
 /// Generate the per-session OpenShell policy (YAML) from an acquire request, in the real
 /// schema (`policy get --base -o json`, openshell 0.0.77).
@@ -191,11 +200,20 @@ pub fn session_policy_yaml(req: &AcquireRequest) -> String {
     yaml
 }
 
+/// How the agent was launched inside the sandbox — determines how `stop` reaches it.
+#[derive(Debug, Clone)]
+enum LaunchMode {
+    /// Detached zellij session of this name (the attachable path, FR-011).
+    Zellij(String),
+    /// `nohup`-detached process (zellij absent from the image); stopped by program name.
+    Direct(String),
+}
+
 #[derive(Debug, Clone)]
 struct EnvState {
     policy_yaml: String,
     policy_path: PathBuf,
-    zellij_session: Option<String>,
+    launch: Option<LaunchMode>,
 }
 
 /// OpenShell-backed sandbox provider.
@@ -272,6 +290,51 @@ impl OpenShellBackend {
             .control
             .run(&args(&["sandbox", "delete", &Self::sandbox_name(env)]))
             .await;
+    }
+
+    /// Run a bounded, non-interactive command inside the sandbox. Always carries
+    /// `--timeout` — the CLI otherwise waits on stdin when driven non-interactively.
+    async fn exec_in(
+        &self,
+        env: &EnvironmentId,
+        timeout_secs: u32,
+        tail: &[String],
+    ) -> Result<CliOutput, String> {
+        let mut cmd = args(&["sandbox", "exec", "-n", &Self::sandbox_name(env)]);
+        cmd.extend(args(&["--no-tty", "--timeout"]));
+        cmd.push(timeout_secs.to_string());
+        cmd.push("--".into());
+        cmd.extend(tail.iter().cloned());
+        self.control.run(&cmd).await
+    }
+
+    /// Tear everything down after a failed launch: env record, real sandbox, policy file
+    /// (FR-005, C-B2 — no orphan, no phantom-running session).
+    async fn abort_start(&self, env: &EnvironmentId, reason: String) -> BackendError {
+        let removed = self.envs.lock().expect("poisoned").remove(env);
+        self.delete_sandbox(env).await;
+        if let Some(state) = removed {
+            let _ = std::fs::remove_file(&state.policy_path);
+        }
+        BackendError::StartFailed(reason)
+    }
+}
+
+/// Single-quote a word for `sh -c` (the direct-exec fallback launch line).
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Flatten an exec result into `Err(reason)` unless the command genuinely succeeded.
+fn require_success(result: Result<CliOutput, String>, what: &str) -> Result<CliOutput, String> {
+    match result {
+        Err(e) => Err(format!("{what}: {e}")),
+        Ok(out) if !out.success => Err(if out.stderr.trim().is_empty() {
+            format!("{what} failed")
+        } else {
+            format!("{what}: {}", out.stderr.trim())
+        }),
+        Ok(out) => Ok(out),
     }
 }
 
@@ -375,7 +438,7 @@ impl Backend for OpenShellBackend {
             EnvState {
                 policy_yaml,
                 policy_path,
-                zellij_session: None,
+                launch: None,
             },
         );
         Ok(env)
@@ -391,28 +454,68 @@ impl Backend for OpenShellBackend {
         }
         let zellij_session = daedalus_zellij::format_session_name(env);
 
-        // Launch the agent inside the sandbox, under zellij (FR-004, FR-011):
-        //   openshell sandbox exec -n <name> --no-tty -- zellij --session <s> -- <tool>…
-        let mut exec = args(&["sandbox", "exec", "-n", &Self::sandbox_name(env)]);
-        exec.extend(args(&["--no-tty", "--", "zellij", "--session"]));
-        exec.push(zellij_session.clone());
-        exec.push("--".into());
-        exec.push(tool.program.clone());
-        exec.extend(tool.args.iter().cloned());
-
-        if let Err(e) = self.control.spawn(&exec) {
-            // A failed start tears the environment down — no orphan (FR-005, C-B2),
-            // including the real sandbox.
-            let removed = self.envs.lock().expect("poisoned").remove(env);
-            self.delete_sandbox(env).await;
-            if let Some(state) = removed {
-                let _ = std::fs::remove_file(&state.policy_path);
+        // Every launch step runs to completion — a dead exec is a detected StartFailed,
+        // never a phantom-running session. Does the image carry zellij (FR-011)?
+        let probe = self
+            .exec_in(env, 15, &args(&["sh", "-c", "command -v zellij"]))
+            .await;
+        let launch = match probe {
+            Err(e) => {
+                return Err(self
+                    .abort_start(env, format!("sandbox unreachable for launch: {e}"))
+                    .await)
             }
-            return Err(BackendError::StartFailed(e));
-        }
+            Ok(out) if out.success && !out.stdout.trim().is_empty() => {
+                // Attachable path (FR-004/011), verified against zellij 0.44:
+                // a detached background session, then the tool in a pane of it.
+                let create = self
+                    .exec_in(
+                        env,
+                        30,
+                        &args(&["zellij", "attach", "--create-background", &zellij_session]),
+                    )
+                    .await;
+                if let Err(reason) = require_success(create, "zellij session create") {
+                    return Err(self.abort_start(env, reason).await);
+                }
+                let mut run_tool = args(&["zellij", "--session", &zellij_session, "run", "--"]);
+                run_tool.push(tool.program.clone());
+                run_tool.extend(tool.args.iter().cloned());
+                if let Err(reason) =
+                    require_success(self.exec_in(env, 30, &run_tool).await, "agent launch")
+                {
+                    return Err(self.abort_start(env, reason).await);
+                }
+                LaunchMode::Zellij(zellij_session.clone())
+            }
+            Ok(_) => {
+                // No zellij in the image: the agent still launches (nohup-detached, output
+                // to a log); the attach layer states why it cannot attach (FR-028-style
+                // honesty) rather than the session failing outright.
+                let words: Vec<String> = std::iter::once(&tool.program)
+                    .chain(tool.args.iter())
+                    .map(|w| sh_quote(w))
+                    .collect();
+                let script = format!(
+                    "nohup {} >>/sandbox/.daedalus-agent.log 2>&1 & echo daedalus-launched",
+                    words.join(" ")
+                );
+                let launch = self.exec_in(env, 30, &args(&["sh", "-c", &script])).await;
+                match require_success(launch, "agent launch (direct)") {
+                    Ok(out) if out.stdout.contains("daedalus-launched") => {}
+                    Ok(_) => {
+                        return Err(self
+                            .abort_start(env, "agent launch (direct): no confirmation".into())
+                            .await)
+                    }
+                    Err(reason) => return Err(self.abort_start(env, reason).await),
+                }
+                LaunchMode::Direct(tool.program.clone())
+            }
+        };
 
         if let Some(state) = self.envs.lock().expect("poisoned").get_mut(env) {
-            state.zellij_session = Some(zellij_session.clone());
+            state.launch = Some(launch);
         }
         Ok(AgentHandle {
             env: *env,
@@ -433,19 +536,25 @@ impl Backend for OpenShellBackend {
     }
 
     async fn stop(&self, env: &EnvironmentId) -> Result<(), BackendError> {
-        // Idempotent (C-B5): stopping an unknown / already-stopped env is Ok.
-        let session = self
+        // Idempotent (C-B5): stopping an unknown / already-stopped env is Ok. The agent
+        // lives INSIDE the sandbox, so stop reaches it through `sandbox exec`.
+        let launch = self
             .envs
             .lock()
             .expect("poisoned")
             .get_mut(env)
-            .and_then(|s| s.zellij_session.take());
-        if let Some(session) = session {
-            let _ = tokio::process::Command::new("zellij")
-                .arg("kill-session")
-                .arg(&session)
-                .output()
-                .await;
+            .and_then(|s| s.launch.take());
+        match launch {
+            Some(LaunchMode::Zellij(session)) => {
+                let _ = self
+                    .exec_in(env, 30, &args(&["zellij", "kill-session", &session]))
+                    .await;
+            }
+            Some(LaunchMode::Direct(program)) => {
+                let script = format!("pkill -f {} || true", sh_quote(&program));
+                let _ = self.exec_in(env, 30, &args(&["sh", "-c", &script])).await;
+            }
+            None => {}
         }
         Ok(())
     }

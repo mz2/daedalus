@@ -25,14 +25,17 @@ use daedalus_backend_workshop::WorkshopBackend;
 use daedalus_core::{BackendRegistry, Core, CoreConfig, Store};
 use daedalus_discovery::{DiscoveryCoordinator, LocalSource, MdnsSource};
 use daedalus_proto::BackendKind;
-use daedalus_zellij::{InMemoryTerminal, ScriptedLiveTerminal, TerminalAttach};
+use daedalus_zellij::{
+    AttachError, InMemoryTerminal, ProcessTerminal, ScriptedLiveTerminal, TerminalAttach,
+};
 
 /// Build the app service wired to all v1 backends (fake + Workshop + OpenShell) over a store at
 /// `data_dir`. The terminal attach is chosen from the default backend: the `fake` backend
 /// (the local-testing path, Principle III) uses a synthetic *live* terminal so the surface
-/// exercises the real capture pipeline (redact → persist → observe → stream); other backends
-/// use the empty in-memory terminal, which reports a clear not-attachable reason until a
-/// real zellij-backed attach lands (#11), never a silent blank (contract C-T2).
+/// exercises the real capture pipeline (redact → persist → observe → stream); `openshell`
+/// bridges into the agent's in-sandbox zellij session (issue #15 / FR-008); Workshop still
+/// uses the empty in-memory terminal, which reports a clear not-attachable reason until its
+/// real attach lands (#11), never a silent blank (contract C-T2).
 pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
     let store = Arc::new(Store::open(data_dir).map_err(|e| std::io::Error::other(e.to_string()))?);
     let backends: Vec<Arc<dyn Backend>> = vec![
@@ -43,6 +46,9 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
     let registry = BackendRegistry::new(backends);
     let terminal: Arc<dyn TerminalAttach> = match default_backend_kind() {
         BackendKind::Fake => Arc::new(ScriptedLiveTerminal::new()),
+        BackendKind::OpenShell => Arc::new(ProcessTerminal::new(openshell_attach_resolver(
+            store.clone(),
+        ))),
         _ => Arc::new(InMemoryTerminal::new()),
     };
     // Discover sessions on the local host (zellij) and the LAN (mDNS). Tunnel sources are
@@ -59,6 +65,25 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
         CoreConfig::default(),
     ));
     Ok(App::new(core))
+}
+
+/// Session → attach-bridge command for OpenShell sandboxes: look the session's
+/// environment up in the store, then bridge via
+/// `openshell sandbox exec --tty -n <sandbox> -- zellij attach <session>` (issue #15).
+/// Unknown sessions and a missing CLI yield clear reasons (C-T2), never a blank pane.
+fn openshell_attach_resolver(store: Arc<Store>) -> daedalus_zellij::AttachCommandResolver {
+    use daedalus_backend_openshell::{attach_command, CliOpenShellControl, OpenShellControl};
+    Box::new(move |session| {
+        let record = store
+            .get_session(session)
+            .map_err(|_| AttachError::NotFound)?;
+        let binary = CliOpenShellControl.control_binary().ok_or_else(|| {
+            AttachError::ZellijUnavailable(
+                "openshell CLI not found (install OpenShell or set DAEDALUS_OPENSHELL_CMD)".into(),
+            )
+        })?;
+        Ok(attach_command(&binary, &record.environment_id))
+    })
 }
 
 /// Resolve the default backend kind from `DAEDALUS_BACKEND` (defaults to `fake`).

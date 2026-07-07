@@ -67,6 +67,56 @@ async fn c_t3_excessive_output_is_fully_captured() {
     assert_eq!(total as usize, expected_len);
 }
 
+// --- ProcessTerminal: subprocess-bridged attach (the real-backend path, issue #15) ------
+// A session's terminal is reached by spawning a bridge process (e.g. `openshell sandbox
+// exec --tty … -- zellij attach <s>`) whose stdio IS the terminal. Hermetic here via
+// `cat` (echoes stdin→stdout, proving both directions); the OpenShell command shape is
+// contract-tested in `contract_openshell_backend`.
+
+#[tokio::test]
+async fn process_terminal_bridges_duplex_io() {
+    use daedalus_zellij::{ProcessTerminal, TerminalAttach};
+    let terminal = ProcessTerminal::new(Box::new(|_| Ok(vec!["cat".into()])));
+    let mut ch = terminal.attach(SessionId::new()).await.unwrap();
+
+    ch.input
+        .send(Bytes::from_static(b"hello bridge\n"))
+        .await
+        .unwrap();
+    // The bridge runs on a real PTY (TTY-mode CLIs need a controlling terminal), so the
+    // line discipline may echo the input and translate \n → \r\n; assert the round-trip,
+    // not exact bytes.
+    let mut got = Vec::new();
+    while !String::from_utf8_lossy(&got).contains("hello bridge") {
+        let chunk = tokio::time::timeout(Duration::from_secs(5), ch.output.recv())
+            .await
+            .expect("echo within 5s (C-T1)")
+            .expect("bridge stays open");
+        got.extend_from_slice(&chunk);
+    }
+}
+
+// C-T2: a bridge that cannot spawn yields a clear reason, never a silent blank view.
+#[tokio::test]
+async fn process_terminal_reports_spawn_failure_with_reason() {
+    use daedalus_zellij::{AttachError, ProcessTerminal, TerminalAttach};
+    let terminal =
+        ProcessTerminal::new(Box::new(|_| Ok(vec!["/nonexistent/attach-bridge".into()])));
+    let err = terminal.attach(SessionId::new()).await.unwrap_err();
+    assert!(matches!(err, AttachError::ZellijUnavailable(_)), "{err}");
+}
+
+// C-T2: an unresolvable session (unknown / no environment) propagates its reason.
+#[tokio::test]
+async fn process_terminal_propagates_resolver_error() {
+    use daedalus_zellij::{AttachError, ProcessTerminal, TerminalAttach};
+    let terminal = ProcessTerminal::new(Box::new(|_| Err(AttachError::NotFound)));
+    assert!(matches!(
+        terminal.attach(SessionId::new()).await.unwrap_err(),
+        AttachError::NotFound
+    ));
+}
+
 #[tokio::test]
 async fn c_t4_captured_stream_is_redacted() {
     let fx = Fixture::new();

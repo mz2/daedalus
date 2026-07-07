@@ -13,6 +13,7 @@ pub type ByteStream = mpsc::Receiver<Bytes>;
 pub type ByteSink = mpsc::Sender<Bytes>;
 
 /// A duplex terminal channel for one attached session (contract `terminal-attach.md`).
+#[derive(Debug)]
 pub struct TerminalChannel {
     /// PTY output → rendered in the terminal view (and redacted for capture, R9).
     pub output: ByteStream,
@@ -71,6 +72,132 @@ pub async fn list_local_sessions() -> Result<Vec<String>, AttachError> {
         .map(str::to_owned)
         .collect();
     Ok(names)
+}
+
+/// Resolves a session to the full command line (program + args) of its attach bridge, or
+/// a clear reason why it cannot be attached (C-T2).
+pub type AttachCommandResolver =
+    Box<dyn Fn(SessionId) -> Result<Vec<String>, AttachError> + Send + Sync>;
+
+/// A [`TerminalAttach`] that spawns a bridge subprocess **on a local PTY** whose master
+/// side is the terminal — the real-backend attach path (issue #15). For OpenShell the
+/// bridge is `openshell sandbox exec --tty -n <sandbox> -- zellij attach <session>`; any
+/// future backend with a process-shaped attach surface plugs in via its own resolver.
+///
+/// The PTY is load-bearing, not cosmetic: TTY-mode bridge CLIs take their terminal from
+/// the controlling terminal, and a plain-piped child without one produces **no output at
+/// all** (verified against openshell 0.0.77 — bytes flow from a shell, zero from
+/// `setsid`). The child gets the PTY slave as stdio + controlling terminal; output
+/// (stdout and stderr, interleaved by the line discipline) is read from the master, and
+/// operator input is written to it (FR-023).
+///
+/// Lifecycle: the bridge is killed when the surface drops the channel, detaching from —
+/// never terminating — the agent's session; the output channel closes when the bridge
+/// exits (session ended).
+pub struct ProcessTerminal {
+    resolver: AttachCommandResolver,
+}
+
+/// Fixed bridge PTY geometry until surface-driven resize is plumbed through
+/// [`TerminalChannel`] (issue #15 follow-up).
+const PTY_COLS: u16 = 120;
+const PTY_ROWS: u16 = 40;
+
+impl ProcessTerminal {
+    /// Build over a session→command resolver.
+    #[must_use]
+    pub fn new(resolver: AttachCommandResolver) -> Self {
+        Self { resolver }
+    }
+}
+
+#[async_trait]
+impl TerminalAttach for ProcessTerminal {
+    async fn attach(&self, session: SessionId) -> Result<TerminalChannel, AttachError> {
+        let command = (self.resolver)(session)?;
+        let (program, args) = command
+            .split_first()
+            .ok_or_else(|| AttachError::Unattachable("empty attach command".into()))?;
+
+        let pty = portable_pty::native_pty_system();
+        let pair = pty
+            .openpty(portable_pty::PtySize {
+                rows: PTY_ROWS,
+                cols: PTY_COLS,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| AttachError::Unattachable(format!("could not open a PTY: {e}")))?;
+
+        let mut cmd = portable_pty::CommandBuilder::new(program);
+        cmd.args(args);
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| AttachError::ZellijUnavailable(format!("{program}: {e}")))?;
+        drop(pair.slave);
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| AttachError::Unattachable(format!("PTY reader: {e}")))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| AttachError::Unattachable(format!("PTY writer: {e}")))?;
+
+        let (out_tx, out_rx) = mpsc::channel::<Bytes>(1024);
+        let (in_tx, mut in_rx) = mpsc::channel::<Bytes>(1024);
+        let child = std::sync::Arc::new(std::sync::Mutex::new(child));
+
+        // Surface detached (both channel ends dropped) ⇒ kill the bridge so the blocking
+        // reader unblocks. Killing the bridge only detaches; the agent session lives on.
+        let watchdog_child = child.clone();
+        let watchdog_out = out_tx.clone();
+        tokio::spawn(async move {
+            watchdog_out.closed().await;
+            let _ = watchdog_child.lock().expect("poisoned").kill();
+        });
+
+        // PTY master → surface (blocking reader on a dedicated thread). `_master` keeps
+        // the master end alive for the bridge's lifetime.
+        let reader_child = child.clone();
+        let _master = pair.master;
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break, // bridge exited: channel closes
+                    Ok(n) => {
+                        if out_tx
+                            .blocking_send(Bytes::copy_from_slice(&buf[..n]))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = reader_child.lock().expect("poisoned").kill();
+            drop(_master);
+        });
+
+        // Surface keystrokes / SendInput → PTY master (FR-023).
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            while let Some(bytes) = in_rx.blocking_recv() {
+                if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(TerminalChannel {
+            output: out_rx,
+            input: in_tx,
+        })
+    }
 }
 
 /// An in-memory terminal used by tests and the fake backend's monitoring path.
