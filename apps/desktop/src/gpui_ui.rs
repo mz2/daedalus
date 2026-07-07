@@ -255,6 +255,9 @@ struct AppRoot {
     start_tool: Option<ToolId>,
     start_origin: Origin,
     start_backend: BackendKind,
+    /// Whether a launch was attempted with invalid fields (drives the footer-hint error
+    /// copy, prototype `start-foot-hint`).
+    start_attempted: bool,
     // Tool-form toggle.
     tool_accepts_input: bool,
     // Theme preference (System follows the OS appearance — FR-009a, default).
@@ -396,6 +399,7 @@ impl AppRoot {
             start_tool: None,
             start_origin: Origin::Fresh,
             start_backend: BackendKind::Fake,
+            start_attempted: false,
             tool_accepts_input: true,
             theme_pref: ThemePreference::default(),
             os_appearance: os,
@@ -817,28 +821,106 @@ impl AppRoot {
     }
 
     fn render_start(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette;
         let tools = self.app.core().list_tools().unwrap_or_default();
         let selected_tool = self.start_tool.or_else(|| tools.first().map(|t| t.id));
+        let accent = col(p.skin.accent());
 
-        // Tool picker.
-        let tool_row = h_flex().gap_2().children(tools.into_iter().map(|t| {
-            let id = t.id;
-            let chosen = selected_tool == Some(id);
-            let btn = Button::new(SharedString::from(format!("pick-{id}"))).label(t.name);
-            let btn = if chosen { btn.primary() } else { btn.outline() };
-            btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.start_tool = Some(id);
-                cx.notify();
-            }))
-        }));
+        // Step 1 — Agentic tool (prototype `FormSection` + tool card grid): icon tile,
+        // name, capability chip; the selected card carries the accent border.
+        let mut tool_grid = h_flex().gap_2().flex_wrap().w_full();
+        for t in &tools {
+            let tid = t.id;
+            let chosen = selected_tool == Some(tid);
+            let initial = t.name.chars().next().unwrap_or('?').to_ascii_uppercase();
+            let mut tile_bg = accent;
+            tile_bg.a = 0.25;
+            let interactive = t.capabilities.accepts_interactive_input;
+            let cap_chip = if interactive {
+                let good = col(p.status_color(StatusTone::Completed));
+                let mut tint = good;
+                tint.a = 0.18;
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_full()
+                    .text_xs()
+                    .bg(tint)
+                    .text_color(good)
+                    .child("accepts input")
+            } else {
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_full()
+                    .text_xs()
+                    .bg(gpui::rgba(0xffffff10))
+                    .opacity(0.8)
+                    .child("headless")
+            };
+            let mut card_el = v_flex()
+                .id(SharedString::from(format!("tool-{tid}")))
+                .gap_2()
+                .p_3()
+                .rounded_lg()
+                .w(px(260.0))
+                .bg(gpui::rgba(0xffffff08))
+                .border_1()
+                .border_color(gpui::rgba(0xffffff14))
+                .cursor_pointer()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(28.0))
+                                .h(px(28.0))
+                                .rounded_md()
+                                .bg(tile_bg)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .font_semibold()
+                                .child(String::from(initial)),
+                        )
+                        .child(div().font_semibold().child(t.name.clone()))
+                        .child(div().flex_1())
+                        .children(chosen.then(|| div().text_color(accent).child("✓"))),
+                )
+                .child(cap_chip)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.start_tool = Some(tid);
+                    cx.notify();
+                }));
+            if chosen {
+                card_el = card_el.border_color(accent);
+            }
+            tool_grid = tool_grid.child(card_el);
+        }
+        if tools.is_empty() {
+            tool_grid = tool_grid.child(empty("No tools registered — add one under Tools."));
+        }
 
-        // Origin toggle.
+        // Step 2 — Objective (SpecKit convention: an objective decomposing into tracked
+        // tasks from a tasks.md).
+        let objective_body = v_flex()
+            .gap_3()
+            .child(field(
+                "Objective",
+                div().child(Input::new(&self.inputs.objective)),
+            ))
+            .child(field(
+                "Tasks file (tasks.md)",
+                div().child(Input::new(&self.inputs.tasks_path)),
+            ));
+
+        // Step 3 — Environment & backend: fresh vs pre-existing (worktree required for
+        // pre-existing, FR-002a), and the hosting backend.
         let origin_row = h_flex()
             .gap_2()
             .child(origin_btn(self, cx, Origin::Fresh, "Fresh"))
             .child(origin_btn(self, cx, Origin::PreExisting, "Pre-existing"));
-
-        // Backend picker.
         let mut kinds: Vec<BackendKind> = self
             .app
             .core()
@@ -857,66 +939,108 @@ impl AppRoot {
                 cx.notify();
             }))
         }));
-
-        let mut form = v_flex()
-            .gap_3()
-            .child(field("Tool", tool_row))
-            .child(field(
-                "Objective",
-                div().child(Input::new(&self.inputs.objective)),
-            ))
-            .child(field(
-                "Tasks file (tasks.md)",
-                div().child(Input::new(&self.inputs.tasks_path)),
-            ))
-            .child(field("Environment", origin_row));
+        let mut env_body = v_flex().gap_3().child(field("Environment", origin_row));
         if self.start_origin == Origin::PreExisting {
-            form = form.child(field(
-                "Worktree",
-                div().child(Input::new(&self.inputs.worktree)),
-            ));
+            env_body = env_body
+                .child(field(
+                    "Worktree",
+                    div().child(Input::new(&self.inputs.worktree)),
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .opacity(0.6)
+                        .child(crate::screens::start::WORKTREE_REASSURANCE),
+                );
         }
-        form = form.child(field("Backend", backend_row)).child(
-            h_flex()
-                .gap_2()
-                .child(
-                    Button::new("do-start")
-                        .primary()
-                        .label("Start session")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.submit_start(cx);
-                        })),
-                )
-                .child(
-                    Button::new("cancel-start")
-                        .ghost()
-                        .label("Cancel")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.view = View::Nav(NavItem::Tasks);
-                            cx.notify();
-                        })),
-                ),
-        );
+        env_body = env_body.child(field("Backend", backend_row));
 
-        screen(
-            "Start a session",
-            "Select a tool + objective, choose an environment, launch",
-        )
-        .child(card().child(form))
+        // Launch footer (prototype `start-foot`): the tested hint copy left, the primary
+        // action right.
+        let valid = selected_tool.is_some()
+            && !self.input_value(&self.inputs.objective, cx).is_empty()
+            && !self.input_value(&self.inputs.tasks_path, cx).is_empty();
+        let hint =
+            crate::screens::start::StartScreen::footer_hint(self.start_attempted, valid, false);
+        let hint_color: gpui::Hsla = match hint.tone {
+            crate::screens::start::FooterTone::Error => {
+                col(p.status_color(StatusTone::Failed)).into()
+            }
+            crate::screens::start::FooterTone::Warn => {
+                col(p.status_color(StatusTone::Stalled)).into()
+            }
+            crate::screens::start::FooterTone::Neutral => gpui::rgba(0xffffff90).into(),
+        };
+        let footer = h_flex()
+            .items_center()
+            .gap_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(gpui::rgba(0xffffff14))
+            .child(div().text_sm().text_color(hint_color).child(hint.text))
+            .child(div().flex_1())
+            .child(
+                Button::new("do-start")
+                    .primary()
+                    .label("Start session →")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.submit_start(cx);
+                    })),
+            );
+
+        let header = h_flex()
+            .items_center()
+            .w_full()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().text_xl().font_semibold().child("Start a session"))
+                    .child(div().text_sm().opacity(0.6).child(
+                        "Launch an agentic tool against an objective inside an environment",
+                    )),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("cancel-start")
+                    .ghost()
+                    .label("× Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.view = View::Nav(NavItem::Tasks);
+                        cx.notify();
+                    })),
+            );
+
+        v_flex()
+            .gap_4()
+            .size_full()
+            .p_4()
+            .child(header)
+            .child(step_card(1, "Agentic tool", tool_grid))
+            .child(step_card(2, "Objective", objective_body))
+            .child(step_card(3, "Environment & backend", env_body))
+            .child(footer)
     }
 
     fn submit_start(&mut self, cx: &mut Context<Self>) {
         let tools = self.app.core().list_tools().unwrap_or_default();
         let Some(tool_id) = self.start_tool.or_else(|| tools.first().map(|t| t.id)) else {
+            // An attempted-but-invalid launch flips the footer hint to its error copy
+            // rather than failing silently (prototype `start-foot-hint`).
+            self.start_attempted = true;
+            cx.notify();
             return;
         };
         let tasks_file = self.input_value(&self.inputs.tasks_path, cx);
         if tasks_file.is_empty() {
+            self.start_attempted = true;
+            cx.notify();
             return;
         }
         let worktree = if self.start_origin == Origin::PreExisting {
             let path = self.input_value(&self.inputs.worktree, cx);
             if path.is_empty() {
+                self.start_attempted = true;
+                cx.notify();
                 return;
             }
             Some(WorktreeRef {
@@ -1132,6 +1256,11 @@ impl AppRoot {
             return screen("Session", "not found");
         };
 
+        // Header row (prototype `sess-head`): back · tool · status pill · [controls].
+        let mut controls = h_flex().gap_2().items_center();
+        for c in &vm.controls {
+            controls = controls.child(self.control_button(id, c, cx));
+        }
         let header = h_flex()
             .items_center()
             .gap_3()
@@ -1145,9 +1274,32 @@ impl AppRoot {
                         cx.notify();
                     })),
             )
-            .child(badge_pill(&vm.badge))
             .child(div().font_semibold().child(vm.tool.clone()))
-            .child(div().text_sm().opacity(0.6).child(vm.objective.clone()));
+            .child(badge_pill(&vm.badge))
+            .child(div().flex_1())
+            .child(controls);
+
+        // Session title + meta chips (prototype `sess-title` / `sess-chips`): the
+        // objective as the headline; spec ref, backend, isolation posture as chips —
+        // `worktree-isolated` carries the positive tint (FR-002a stated, not implied).
+        let title = div().text_xl().font_semibold().child(vm.objective.clone());
+        let mut chips_row = h_flex().gap_2().items_center().flex_wrap();
+        for chip in &vm.chips {
+            let mut el = div()
+                .px_2()
+                .py_0p5()
+                .rounded_full()
+                .text_xs()
+                .bg(gpui::rgba(0xffffff10))
+                .child(chip.label.clone());
+            if chip.positive {
+                let good = col(p.status_color(StatusTone::Completed));
+                let mut tint = good;
+                tint.a = 0.18;
+                el = el.bg(tint).text_color(good);
+            }
+            chips_row = chips_row.child(el);
+        }
 
         // The per-status state banner (prototype `StateBanner`), copy verbatim from the
         // view-model; its actions are carried by the header controls below.
@@ -1171,14 +1323,6 @@ impl AppRoot {
             }
             el
         });
-
-        // Header lifecycle controls in prototype order, from the view-model: Send input
-        // and Clean up gated with a stated reason, Stop only while the run is on,
-        // Confirm completion / Start similar per state.
-        let mut controls = h_flex().gap_2().items_center();
-        for c in &vm.controls {
-            controls = controls.child(self.control_button(id, c, cx));
-        }
 
         // Send-input row: live when the view-model raises no notice; otherwise disabled
         // with the tested review-mode/no-input explanation shown alongside.
@@ -1215,21 +1359,93 @@ impl AppRoot {
             .clone()
             .map(|n| div().text_xs().opacity(0.6).child(n));
 
-        // Task board from the view-model rows (badge label/color already resolved).
-        let mut board_el = v_flex().gap_1().child(section_label("Task board"));
-        if vm.board.is_empty() {
-            board_el = board_el.child(empty("No tracked tasks."));
+        // Tasks panel (prototype `TaskBoard`): "Tasks — from SpecKit tasks.md", done/total
+        // progress, and the four status columns with per-card id + status dot + title;
+        // in-progress cards carry the accent border.
+        let (done, total) = vm.progress;
+        let progress_bar = div()
+            .h(px(5.0))
+            .w_full()
+            .rounded_full()
+            .bg(gpui::rgba(0xffffff14))
+            .child(
+                div()
+                    .h_full()
+                    .rounded_full()
+                    .bg(col(p.skin.accent()))
+                    .w(gpui::relative(if total == 0 {
+                        0.0
+                    } else {
+                        done as f32 / total as f32
+                    })),
+            );
+        let mut columns = h_flex().gap_2().items_start().w_full();
+        for column in vm.board_columns() {
+            let tone = StatusTone::from_task(column.status);
+            let mut col_el = v_flex().gap_1().flex_1().min_w_0().child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(status_dot(p, tone))
+                    .child(div().text_xs().font_semibold().child(column.title))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .opacity(0.5)
+                            .child(column.cards.len().to_string()),
+                    ),
+            );
+            for t in &column.cards {
+                let mut card_el = v_flex()
+                    .gap_1()
+                    .p_2()
+                    .rounded_md()
+                    .bg(gpui::rgba(0xffffff08))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .opacity(0.6)
+                                    .font_family(mono_family())
+                                    .child(t.id.clone()),
+                            )
+                            .child(div().flex_1())
+                            .child(status_dot(p, t.badge.tone)),
+                    )
+                    .child(div().text_sm().child(t.description.clone()));
+                if column.status == daedalus_proto::TaskStatus::InProgress {
+                    card_el = card_el.border_1().border_color(col(p.skin.accent()));
+                }
+                col_el = col_el.child(card_el);
+            }
+            columns = columns.child(col_el);
         }
-        for t in &vm.board {
-            board_el = board_el.child(
+        let mut board_el = v_flex()
+            .gap_2()
+            .child(
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(badge_pill(&t.badge))
-                    .child(div().font_semibold().text_sm().child(t.id.clone()))
-                    .child(div().text_sm().child(t.description.clone())),
-            );
-        }
+                    .child(div().font_semibold().child("Tasks"))
+                    .child(div().text_xs().opacity(0.5).child("from SpecKit tasks.md"))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .opacity(0.8)
+                            .child(format!("{done}/{total}")),
+                    ),
+            )
+            .child(progress_bar);
+        board_el = if vm.board.is_empty() {
+            board_el.child(empty("No tracked tasks."))
+        } else {
+            board_el.child(columns)
+        };
 
         // The telemetry rail (FR-019/019a) + trimmed-output notice (FR-016a).
         let rail = self.render_rail(&vm.rail);
@@ -1243,65 +1459,107 @@ impl AppRoot {
                 .child(n)
         });
 
-        // Terminal pane: a live embedded terminal rendering the core's REDACTED capture
-        // stream when attached; a stated not-attachable reason if the attach failed
-        // (contract C-T2 — never a silent blank); else the captured-output tail.
-        let terminal_pane = if let Some(term) = &self.terminal {
-            v_flex()
-                .gap_1()
-                .child(section_label("Terminal"))
-                .children(trim_notice)
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(380.0))
-                        .rounded_md()
-                        .overflow_hidden()
-                        .bg(gpui::rgba(0x000000a0))
-                        .child(term.clone()),
-                )
+        // Terminal panel (prototype `term-bar` + body): header states liveness — a green
+        // LIVE pill while the run is on, "persisted output" for ended sessions,
+        // "last-known output" when unreachable — then the live embedded terminal
+        // (REDACTED core stream), a stated not-attachable reason (C-T2 — never a silent
+        // blank), or the captured-output tail. The send-input row sits under the pane.
+        let live = !vm.status.is_terminal() && vm.status != SessionStatus::Unknown;
+        let liveness = if live {
+            let good = col(p.status_color(StatusTone::Running));
+            let mut tint = good;
+            tint.a = 0.18;
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_full()
+                .text_xs()
+                .bg(tint)
+                .text_color(good)
+                .child("● LIVE")
+        } else {
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_full()
+                .text_xs()
+                .bg(gpui::rgba(0xffffff10))
+                .opacity(0.8)
+                .child(if vm.status == SessionStatus::Unknown {
+                    "last-known output"
+                } else {
+                    "persisted output"
+                })
+        };
+        let term_bar = h_flex()
+            .items_center()
+            .gap_2()
+            .child(div().font_semibold().text_sm().child("Terminal"))
+            .child(liveness);
+        let term_body = if let Some(term) = &self.terminal {
+            div()
+                .w_full()
+                .h(px(380.0))
+                .rounded_md()
+                .overflow_hidden()
+                .bg(gpui::rgba(0x000000a0))
+                .child(term.clone())
+                .into_any_element()
         } else if let Some(reason) = &self.terminal_error {
-            v_flex().gap_1().child(section_label("Terminal")).child(
-                div()
-                    .w_full()
-                    .p_3()
-                    .rounded_md()
-                    .bg(gpui::rgba(0x00000040))
-                    .text_sm()
-                    .child(format!("Not attachable: {reason}")),
-            )
+            div()
+                .w_full()
+                .p_3()
+                .rounded_md()
+                .bg(gpui::rgba(0x00000040))
+                .text_sm()
+                .child(format!("Not attachable: {reason}"))
+                .into_any_element()
         } else {
             let output = self.app.core().session_output(id, 8192);
-            v_flex()
-                .gap_1()
-                .child(section_label("Output"))
-                .children(trim_notice)
-                .child(
-                    div()
-                        .w_full()
-                        .p_2()
-                        .rounded_md()
-                        .bg(gpui::rgba(0x00000040))
-                        .font_family(mono_family())
-                        .text_xs()
-                        .child(if output.is_empty() {
-                            "— no captured output —".to_string()
-                        } else {
-                            output
-                        }),
-                )
+            div()
+                .w_full()
+                .p_2()
+                .rounded_md()
+                .bg(gpui::rgba(0x00000040))
+                .font_family(mono_family())
+                .text_xs()
+                .child(if output.is_empty() {
+                    "— no captured output —".to_string()
+                } else {
+                    output
+                })
+                .into_any_element()
         };
+        let terminal_pane = v_flex()
+            .gap_1()
+            .child(term_bar)
+            .children(trim_notice)
+            .child(term_body)
+            .child(send_row)
+            .children(input_notice);
+
+        // Two-column main area (prototype `sess-grid`): terminal left, Tasks + rail right.
+        let main = h_flex()
+            .gap_4()
+            .items_start()
+            .w_full()
+            .child(v_flex().gap_2().flex_1().min_w_0().child(terminal_pane))
+            .child(
+                v_flex()
+                    .gap_4()
+                    .w(px(380.0))
+                    .flex_none()
+                    .child(board_el)
+                    .child(rail),
+            );
 
         card()
             .gap_4()
             .child(header)
+            .child(title)
+            .child(chips_row)
             .children(banner)
-            .child(controls)
-            .child(send_row)
-            .children(input_notice)
-            .child(board_el)
-            .child(rail)
-            .child(terminal_pane)
+            .child(main)
     }
 
     /// Render one view-model [`ActionButton`] control, wiring the tested labels back to
@@ -2004,6 +2262,33 @@ fn screen(title: &str, subtitle: &str) -> gpui::Div {
 }
 
 /// A small section heading.
+/// A numbered step section (prototype `FormSection`): circled step number + heading,
+/// body beneath.
+fn step_card(step: usize, title: &'static str, body: impl IntoElement) -> gpui::Div {
+    card()
+        .gap_3()
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(22.0))
+                        .h(px(22.0))
+                        .rounded_full()
+                        .bg(gpui::rgba(0xffffff14))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .font_semibold()
+                        .child(step.to_string()),
+                )
+                .child(div().font_semibold().child(title)),
+        )
+        .child(body)
+}
+
 fn section_label(text: &str) -> impl IntoElement {
     div().font_semibold().text_sm().child(text.to_string())
 }

@@ -78,8 +78,33 @@ pub struct TaskRow {
     pub id: String,
     /// Description.
     pub description: String,
+    /// Raw status (drives board-column grouping).
+    pub status: TaskStatus,
     /// Status badge.
     pub badge: StatusBadge,
+}
+
+/// One column of the session task board (prototype `TaskBoard` `COLUMNS` in
+/// `session.jsx`): a status bucket with its cards, rendered even when empty.
+#[derive(Debug, Clone)]
+pub struct BoardColumn {
+    /// Column title ("To do", "In progress", "Blocked", "Done").
+    pub title: &'static str,
+    /// The status this column buckets.
+    pub status: TaskStatus,
+    /// Cards in board order.
+    pub cards: Vec<TaskRow>,
+}
+
+/// A header meta chip (prototype `sess-chips`): spec branch, backend, isolation posture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetaChip {
+    /// Icon hint for the renderer's icon set.
+    pub icon: &'static str,
+    /// Chip text.
+    pub label: String,
+    /// Soft-positive tint (the green `worktree-isolated` chip).
+    pub positive: bool,
 }
 
 /// A labelled telemetry meter.
@@ -279,6 +304,19 @@ pub enum BannerTone {
     Unknown,
 }
 
+/// The display label for the objective's spec reference: the trailing `specs/…` fragment
+/// of the artifact root when present (SpecKit convention), else its last path component.
+fn spec_label(root: &str) -> Option<String> {
+    let trimmed = root.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(idx) = trimmed.rfind("specs/") {
+        return Some(trimmed[idx..].to_string());
+    }
+    trimmed.rsplit('/').next().map(str::to_string)
+}
+
 /// The per-status session banner (prototype `StateBanner` in `session.jsx`): a bold lead,
 /// an optional plain continuation, an optional quoted line (the agent's question or exit
 /// summary), an optional meta line, and inline actions.
@@ -328,8 +366,12 @@ pub struct SessionView {
     /// The disabled input-row notice: review mode for ended sessions, the no-input
     /// explanation for non-interactive tools; `None` when the input is live.
     pub input_notice: Option<String>,
+    /// Header meta chips: spec ref, backend, isolation posture (prototype `sess-chips`).
+    pub chips: Vec<MetaChip>,
     /// Task board rows.
     pub board: Vec<TaskRow>,
+    /// Board progress: (done, total) — the Tasks panel "n/m" header.
+    pub progress: (usize, usize),
     /// Compact telemetry rows (the collapsed-rail footer meters).
     pub telemetry: Vec<TelemetryRow>,
     /// The telemetry rail: Resources / Timeline / Outcome (FR-019/019a).
@@ -381,15 +423,24 @@ impl SessionView {
         backend_label: Option<&'static str>,
         theme: &Theme,
     ) -> Self {
-        let board = detail
+        let board: Vec<TaskRow> = detail
             .tasks
             .iter()
             .map(|t| TaskRow {
                 id: t.id.0.clone(),
                 description: t.description.clone(),
+                status: t.status,
                 badge: StatusBadge::task(t.status, theme),
             })
             .collect();
+        let progress = (
+            board
+                .iter()
+                .filter(|t| t.status == TaskStatus::Done)
+                .count(),
+            board.len(),
+        );
+        let chips = Self::meta_chips(&detail, backend_label);
 
         let telemetry = detail
             .metrics
@@ -439,11 +490,75 @@ impl SessionView {
             trim_notice,
             banner,
             input_notice,
+            chips,
             board,
+            progress,
             telemetry,
             rail,
             controls,
         }
+    }
+
+    /// Header meta chips (prototype `sess-chips`): the spec reference the objective lives
+    /// on, the hosting backend, and the isolation posture — `worktree-isolated` (green,
+    /// FR-002a) for pre-existing worktrees, `fresh environment` otherwise.
+    #[must_use]
+    pub fn meta_chips(
+        detail: &SessionDetail,
+        backend_label: Option<&'static str>,
+    ) -> Vec<MetaChip> {
+        let mut chips = Vec::new();
+        if let Some(spec) = spec_label(&detail.objective.artifact_ref.root) {
+            chips.push(MetaChip {
+                icon: "doc",
+                label: spec,
+                positive: false,
+            });
+        }
+        if let Some(backend) = backend_label {
+            chips.push(MetaChip {
+                icon: "backends",
+                label: backend.to_string(),
+                positive: false,
+            });
+        }
+        chips.push(match detail.environment.worktree_ref {
+            Some(_) => MetaChip {
+                icon: "shield",
+                label: "worktree-isolated".into(),
+                positive: true,
+            },
+            None => MetaChip {
+                icon: "shield",
+                label: "fresh environment".into(),
+                positive: false,
+            },
+        });
+        chips
+    }
+
+    /// Group the board into the prototype's columns (`session.jsx` `COLUMNS`), every
+    /// column present even when empty so counts read at a glance.
+    #[must_use]
+    pub fn board_columns(&self) -> Vec<BoardColumn> {
+        [
+            ("To do", TaskStatus::Todo),
+            ("In progress", TaskStatus::InProgress),
+            ("Blocked", TaskStatus::Blocked),
+            ("Done", TaskStatus::Done),
+        ]
+        .into_iter()
+        .map(|(title, status)| BoardColumn {
+            title,
+            status,
+            cards: self
+                .board
+                .iter()
+                .filter(|t| t.status == status)
+                .cloned()
+                .collect(),
+        })
+        .collect()
     }
 
     /// Shape the per-status state banner (prototype `StateBanner`): every non-plain state
@@ -783,6 +898,56 @@ impl SessionView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spec_label_prefers_the_specs_fragment() {
+        assert_eq!(
+            spec_label("/work/repo/specs/044-device-flow").as_deref(),
+            Some("specs/044-device-flow")
+        );
+        assert_eq!(
+            spec_label("/tmp/objective-x/").as_deref(),
+            Some("objective-x")
+        );
+        assert_eq!(spec_label(""), None);
+    }
+
+    #[tokio::test]
+    async fn board_groups_into_prototype_columns_with_progress() {
+        let fx = daedalus_tests::Fixture::new();
+        let tool = fx.register_sample_tool("claude");
+        let req = fx.fresh_request(tool);
+        let objective = req.objective.clone();
+        fx.write_tasks(
+            &objective,
+            "- [ ] T001 First\n- [~] T002 Second\n- [x] T003 Third\n- [!] T004 Fourth\n",
+        );
+        let id = fx.core.start_session(req).await.unwrap();
+        fx.core.refresh_task_board(id).unwrap();
+
+        let view = SessionView::build(&fx.app, id, &Theme::host_default()).unwrap();
+        // Every prototype column present, counts match, done/total progress reads 1/4.
+        let columns = view.board_columns();
+        let shape: Vec<(&str, usize)> = columns.iter().map(|c| (c.title, c.cards.len())).collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("To do", 1),
+                ("In progress", 1),
+                ("Blocked", 1),
+                ("Done", 1)
+            ]
+        );
+        assert_eq!(view.progress, (1, 4));
+
+        // Header meta chips: spec ref, backend, and the isolation posture — a fresh
+        // environment is stated, never implied (FR-002a chip is the positive one).
+        assert!(view.chips.iter().any(|c| c.icon == "doc"));
+        assert!(view
+            .chips
+            .iter()
+            .any(|c| c.label == "fresh environment" && !c.positive));
+    }
 
     #[tokio::test]
     async fn awaiting_session_shows_confirm_and_disabled_input_when_unsupported() {
