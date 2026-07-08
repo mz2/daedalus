@@ -63,7 +63,7 @@ RUN set -eux; \
 # simplified ASCII UI (the embedded terminal's font set has no powerline glyphs — they
 # render as "?"), and no startup tips.
 RUN mkdir -p /sandbox/.config/zellij/layouts \
-    && printf 'simplified_ui true\npane_frames false\ndefault_layout "bare"\nshow_startup_tips false\n' \
+    && printf 'simplified_ui true\npane_frames false\ndefault_layout "bare"\nshow_startup_tips false\nshow_release_notes false\n' \
          > /sandbox/.config/zellij/config.kdl \
     && printf 'layout {\n    pane\n}\n' > /sandbox/.config/zellij/layouts/bare.kdl \
     && chown -R sandbox:sandbox /sandbox/.config/zellij
