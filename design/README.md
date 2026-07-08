@@ -273,6 +273,9 @@ the accent border on in-progress cards). Deliberate deviations that remain:
   pending in GPUI (copy lives tested in the view-model).
 - **Start: tool cards show no version/description**: `ToolDef` has neither field; cards show
   name + capability chip only.
+- **Session: resource meters hidden** (2026-07-08, operator call): CPU/mem/disk readouts are
+  placeholder data until FR-019 lands real metrics (#9) and read as noise — the rail shows
+  runtime + the unknown-state notice only; the prototype's sparklines return with real data.
 - **Session: terminal icon buttons** (info/search/copy/jump-to-latest) and the **zellij tab
   strip** are not drawn — the embedded terminal renders zellij's own UI inside the pane; the
   in-progress-column collapse toggle and rail sparklines are still view-model-only.

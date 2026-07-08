@@ -37,12 +37,27 @@ pub fn build_app(data_dir: &std::path::Path) -> std::io::Result<App> {
     // The OpenShell sandbox image is operator configuration owned by the app: the
     // persisted Settings value first, DAEDALUS_OPENSHELL_FROM only as a fallback.
     let image_store = store.clone();
+    // Zero-config default: when the repo's own agent image is present in the local
+    // Docker daemon, use it rather than the bare base image (no zellij / agent tools).
+    // Probed once at startup; the persisted Setting and env var still take precedence.
+    let local_default = std::process::Command::new("docker")
+        .args(["image", "inspect", "daedalus/e2e-openshell:latest"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|_| "daedalus/e2e-openshell:latest".to_string());
     let openshell_control =
         daedalus_backend_openshell::CliOpenShellControl::with_image_source(Arc::new(move || {
             image_store
                 .backend_image(BackendKind::OpenShell)
                 .ok()
                 .flatten()
+                .or_else(|| {
+                    std::env::var("DAEDALUS_OPENSHELL_FROM")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| local_default.clone())
         }));
     let backends: Vec<Arc<dyn Backend>> = vec![
         Arc::new(FakeBackend::new()),

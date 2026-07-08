@@ -499,6 +499,14 @@ impl AppRoot {
             }
         }
 
+        self.attach_terminal(id, cx);
+
+        cx.notify();
+    }
+
+    /// Attach the embedded terminal for `id` through the core capture path — used by both
+    /// the open-session path and the start-flow's jump into a freshly started session.
+    fn attach_terminal(&mut self, id: SessionId, cx: &mut Context<Self>) {
         let app = self.app.clone();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
@@ -564,8 +572,6 @@ impl AppRoot {
             });
         })
         .detach();
-
-        cx.notify();
     }
 
     /// Tear down the embedded terminal (dropping the view drops its reader/writer bridge,
@@ -1088,9 +1094,10 @@ impl AppRoot {
             backend: self.start_backend,
             limits: daedalus_proto::ResourceLimits::default(),
         };
-        // Await the start (G1): navigate to Fleet only on success; on failure surface the
-        // stated reason and STAY on the Start form rather than optimistically leaving so a
-        // rejected start looks like it worked.
+        // Await the start (G1): open the NEW SESSION on success (the operator's next act
+        // is watching it, not scanning the fleet); on failure surface the stated reason
+        // and STAY on the Start form rather than optimistically leaving so a rejected
+        // start looks like it worked.
         let app = self.app.clone();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
@@ -1099,6 +1106,12 @@ impl AppRoot {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match outcome {
+                    Ok(Ok(daedalus_app::CommandResult::SessionStarted(id))) => {
+                        this.last_error = None;
+                        this.view = View::Session(id);
+                        this.session_focus = None;
+                        this.attach_terminal(id, cx);
+                    }
                     Ok(Ok(_)) => {
                         this.last_error = None;
                         this.view = View::Nav(NavItem::Fleet);
@@ -1634,51 +1647,20 @@ impl AppRoot {
         let p = self.palette;
         let mut el = v_flex().gap_2().w_full();
 
-        // Resources — or the unknown-state notice (never shown as healthy, s-908).
-        el = el.child(section_label("Resources"));
+        // Resource meters are deliberately NOT drawn (recorded deviation, 2026-07-08):
+        // until real FR-019 metrics land (#9) the numbers are placeholders and the
+        // operator called them noise. The unknown-state notice and runtime still show —
+        // those carry real signal.
         if let Some(notice) = rail.unavailable_notice {
             el = el.child(div().text_xs().opacity(0.7).child(notice));
         }
         if let Some(res) = &rail.resources {
-            let spark = |s: &crate::screens::session::ResourceSpark| {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().text_xs().opacity(0.6).w(px(64.0)).child(s.label))
-                    .child(
-                        div()
-                            .font_family(mono_family())
-                            .text_xs()
-                            .child(s.value_text.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .opacity(0.4)
-                            .child(format!("{} samples", s.history.len())),
-                    )
-            };
-            el = el
-                .child(spark(&res.cpu))
-                .child(spark(&res.memory))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().text_xs().opacity(0.6).w(px(64.0)).child("Disk"))
-                        .child(
-                            div()
-                                .font_family(mono_family())
-                                .text_xs()
-                                .child(res.disk.value_text.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .opacity(0.6)
-                        .child(format!("{} {}", res.runtime_label, res.runtime)),
-                );
+            el = el.child(
+                div()
+                    .text_xs()
+                    .opacity(0.6)
+                    .child(format!("{} {}", res.runtime_label, res.runtime)),
+            );
         }
 
         // Timeline (FR-019a): lifecycle + operator actions + notes, oldest → newest.
