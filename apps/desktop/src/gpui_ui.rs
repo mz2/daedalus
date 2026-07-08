@@ -1559,13 +1559,18 @@ impl AppRoot {
                 })
                 .into_any_element()
         };
-        let terminal_pane = v_flex()
+        // With a live terminal attached, keystrokes go straight into the pane (the
+        // CommandWriter routes them through SendInput) — the separate field would be
+        // redundant, so it only renders when there is no terminal to type into.
+        let mut terminal_pane = v_flex()
             .gap_1()
             .child(term_bar)
             .children(trim_notice)
-            .child(term_body)
-            .child(send_row)
-            .children(input_notice);
+            .child(term_body);
+        if self.terminal.is_none() {
+            terminal_pane = terminal_pane.child(send_row);
+        }
+        terminal_pane = terminal_pane.children(input_notice);
 
         // Two-column main area (prototype `sess-grid`): terminal left, Tasks + rail right.
         let main = h_flex()
@@ -1679,12 +1684,23 @@ impl AppRoot {
                     .bg(col(p.skin.accent()))
                     .into_any_element(),
             };
+            // When it happened, relative ("8m ago") — absolute times mean re-deriving
+            // "how long ago" in your head; the wait durations are what the operator acts on.
+            let age_secs = ((daedalus_core::clock::now().millis() - entry.timestamp.millis()).max(0)
+                as u64)
+                / 1000;
+            let when = format!(
+                "{} ago",
+                crate::screens::needs::wait_label(std::time::Duration::from_secs(age_secs))
+            );
             el = el.child(
                 h_flex()
                     .gap_2()
                     .items_center()
                     .child(node)
-                    .child(div().text_xs().child(entry.label.clone())),
+                    .child(div().text_xs().child(entry.label.clone()))
+                    .child(div().flex_1())
+                    .child(div().text_xs().opacity(0.45).child(when)),
             );
         }
 

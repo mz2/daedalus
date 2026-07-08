@@ -148,6 +148,10 @@ pub struct Core {
     pub(crate) events: broadcast::Sender<AppEvent>,
     pub(crate) runtime: Mutex<HashMap<SessionId, RuntimeHandle>>,
     pub(crate) delivered_input: Mutex<HashMap<SessionId, Vec<Bytes>>>,
+    /// The live attach's input sink per session (FR-023): operator input is written into
+    /// the attached terminal (the PTY bridge for real backends) — retained here because
+    /// the channel itself is handed to the surface.
+    pub(crate) attach_input: Mutex<HashMap<SessionId, daedalus_zellij::ByteSink>>,
     /// Compiled prompt-pattern regexes per tool (validated at registration), so the
     /// output path never recompiles per chunk (FR-015b).
     pub(crate) prompt_patterns: Mutex<HashMap<ToolId, regex::Regex>>,
@@ -191,6 +195,7 @@ impl Core {
             events,
             runtime: Mutex::new(HashMap::new()),
             delivered_input: Mutex::new(HashMap::new()),
+            attach_input: Mutex::new(HashMap::new()),
             prompt_patterns: Mutex::new(HashMap::new()),
         }
     }
@@ -502,6 +507,11 @@ impl Core {
             .await
             .map_err(|e| CoreError::NotAttachable(e.to_string()))?;
 
+        // Retain the input sink so `send_input` reaches this live attach (FR-023).
+        self.attach_input
+            .lock()
+            .expect("poisoned")
+            .insert(id, channel.input.clone());
         let (ui_tx, ui_rx) = mpsc::channel::<Bytes>(1024);
         let core = Arc::clone(self);
         let mut output = channel.output;

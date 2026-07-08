@@ -243,6 +243,9 @@ impl TerminalAttach for ProcessTerminal {
 #[derive(Default)]
 pub struct InMemoryTerminal {
     scripted: std::sync::Mutex<Vec<(SessionId, Vec<Bytes>)>>,
+    /// Input the surface/core wrote into an attached channel, capturable by tests
+    /// (FR-023: send-input genuinely reaches the attached terminal).
+    received: std::sync::Arc<std::sync::Mutex<Vec<(SessionId, Bytes)>>>,
 }
 
 impl InMemoryTerminal {
@@ -259,6 +262,18 @@ impl InMemoryTerminal {
             .expect("poisoned")
             .push((session, chunks));
     }
+
+    /// Input delivered into this session's attached channel so far (FR-023).
+    #[must_use]
+    pub fn input_received(&self, session: SessionId) -> Vec<Bytes> {
+        self.received
+            .lock()
+            .expect("poisoned")
+            .iter()
+            .filter(|(s, _)| *s == session)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -274,7 +289,13 @@ impl TerminalAttach for InMemoryTerminal {
         };
 
         let (out_tx, out_rx) = mpsc::channel(1024);
-        let (in_tx, _in_rx) = mpsc::channel(1024);
+        let (in_tx, mut in_rx) = mpsc::channel::<Bytes>(1024);
+        let received = self.received.clone();
+        tokio::spawn(async move {
+            while let Some(bytes) = in_rx.recv().await {
+                received.lock().expect("poisoned").push((session, bytes));
+            }
+        });
         tokio::spawn(async move {
             for chunk in chunks {
                 if out_tx.send(chunk).await.is_err() {

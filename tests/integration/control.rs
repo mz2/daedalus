@@ -94,3 +94,38 @@ async fn stop_send_input_and_cleanup_are_isolated() {
     assert_eq!(fx.backend.live_environment_count(), 1, "s1 env released");
     assert!(fx.backend.agent_running(&s2_env), "s2 keeps running");
 }
+
+#[tokio::test]
+async fn send_input_reaches_the_attached_terminal_channel() {
+    // FR-023: operator input is delivered INTO the live attach (the PTY bridge for real
+    // backends), not just recorded — the regression behind "typed input never appears
+    // in the terminal" (2026-07-08).
+    use bytes::Bytes;
+
+    let fx = daedalus_tests::Fixture::new();
+    let tool = fx.register_sample_tool("claude");
+    let req = fx.fresh_request(tool);
+    let objective = req.objective.clone();
+    fx.write_tasks(&objective, "- [ ] T001 Work\n");
+    let id = fx.core.start_session(req).await.unwrap();
+
+    fx.terminal
+        .seed(id, vec![Bytes::from_static(b"agent output\n")]);
+    let _channel = fx.core.attach_and_capture(id).await.unwrap();
+
+    fx.core
+        .send_input(id, Bytes::from_static(b"yes\n"))
+        .await
+        .unwrap();
+    // The attached channel's sink received the bytes (async delivery: allow a beat).
+    for _ in 0..50 {
+        if !fx.terminal.input_received(id).is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        fx.terminal.input_received(id),
+        vec![Bytes::from_static(b"yes\n")]
+    );
+}

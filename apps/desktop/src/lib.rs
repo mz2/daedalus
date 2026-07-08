@@ -128,10 +128,11 @@ impl TerminalAttach for RoutingTerminal {
         &self,
         session: daedalus_proto::SessionId,
     ) -> Result<daedalus_zellij::TerminalChannel, AttachError> {
-        let record = self
-            .store
-            .get_session(session)
-            .map_err(|_| AttachError::NotFound)?;
+        // Sessions unknown to the store (local-testing ids, Principle III) stream the
+        // fake backend's scripted live terminal, as before the per-backend routing.
+        let Ok(record) = self.store.get_session(session) else {
+            return self.fake.attach(session).await;
+        };
         let env = self
             .store
             .get_environment(record.environment_id)

@@ -63,17 +63,32 @@ impl Core {
             .or_default()
             .push(data.clone());
 
-        // Best-effort: write the keystrokes into the live zellij session.
-        if let Some((_, _, zellij_session)) = self.runtime_lookup(id) {
-            if let Ok(text) = std::str::from_utf8(&data) {
-                let _ = tokio::process::Command::new("zellij")
-                    .arg("--session")
-                    .arg(&zellij_session)
-                    .arg("action")
-                    .arg("write-chars")
-                    .arg(text)
-                    .output()
-                    .await;
+        // Deliver into the live attached terminal first (the PTY bridge for real
+        // backends) — the input genuinely reaches the agent and echoes in the pane.
+        let sink = self
+            .attach_input
+            .lock()
+            .expect("poisoned")
+            .get(&id)
+            .cloned();
+        let delivered_via_attach = match sink {
+            Some(sink) => sink.send(data.clone()).await.is_ok(),
+            None => false,
+        };
+
+        // Fallback for host-local zellij sessions with no live attach.
+        if !delivered_via_attach {
+            if let Some((_, _, zellij_session)) = self.runtime_lookup(id) {
+                if let Ok(text) = std::str::from_utf8(&data) {
+                    let _ = tokio::process::Command::new("zellij")
+                        .arg("--session")
+                        .arg(&zellij_session)
+                        .arg("action")
+                        .arg("write-chars")
+                        .arg(text)
+                        .output()
+                        .await;
+                }
             }
         }
 
