@@ -254,6 +254,32 @@ five prototype notification toggles. Deliberate deviations that remain:
   event timestamp (the stall *is* the absence of newer events); the prototype uses mock
   `lastEvent` seconds. Same meaning, derived source.
 
+## Recorded deviations (Start + Session GPUI deepening, 2026-07-08)
+
+The GPUI layer now draws the prototype structure for the **Start flow** (numbered step
+sections, the 2-column tool card grid with icon tile + capability chip + accent selection
+border, the launch footer bar with the tested hint copy/tones, × Cancel in the header) and
+the **Session detail** (header controls row, objective as headline, `sess-chips` meta chips
+incl. the green `worktree-isolated`, the `term-bar` liveness pill — LIVE / persisted output /
+last-known output — with the send-input row under the pane, and the Tasks panel: "from
+SpecKit tasks.md", done/total progress bar, four status columns with per-card id + dot and
+the accent border on in-progress cards). Deliberate deviations that remain:
+
+- **Start: no repository / spec-branch browser** (prototype step 2's repo grid + Existing/New
+  spec toggle): the core has no repo/spec discovery yet — the objective + tasks.md fields
+  carry the same data directly. Follow-up when a repo-browsing query exists.
+- **Start: no Review & launch modal**: the footer's primary action launches directly (button
+  reads "Start session →", not "Review & launch"). FailureNotice rendering also still
+  pending in GPUI (copy lives tested in the view-model).
+- **Start: tool cards show no version/description**: `ToolDef` has neither field; cards show
+  name + capability chip only.
+- **Session: resource meters hidden** (2026-07-08, operator call): CPU/mem/disk readouts are
+  placeholder data until FR-019 lands real metrics (#9) and read as noise — the rail shows
+  runtime + the unknown-state notice only; the prototype's sparklines return with real data.
+- **Session: terminal icon buttons** (info/search/copy/jump-to-latest) and the **zellij tab
+  strip** are not drawn — the embedded terminal renders zellij's own UI inside the pane; the
+  in-progress-column collapse toggle and rail sparklines are still view-model-only.
+
 ## Keyboard shortcuts (from the prototype)
 
 ⌘K command palette · ⌘N start session · ⌘⇧L toggle theme · ⌘[ back from session detail. Carry these into

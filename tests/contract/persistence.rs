@@ -42,6 +42,39 @@ fn backend_idle_rates_roundtrip_and_survive_reopen() {
 }
 
 #[test]
+fn backend_sandbox_image_is_persisted_operator_configuration() {
+    // The OpenShell `--from` image is app-owned configuration (Settings), not a shell
+    // environment variable: it round-trips through the store, survives reopen, and a
+    // blank value clears back to the backend default.
+    use daedalus_proto::BackendKind;
+
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.backend_image(BackendKind::OpenShell).unwrap(), None);
+
+    store
+        .set_backend_image(
+            BackendKind::OpenShell,
+            Some("daedalus/e2e-openshell:latest"),
+        )
+        .unwrap();
+    drop(store);
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        store
+            .backend_image(BackendKind::OpenShell)
+            .unwrap()
+            .as_deref(),
+        Some("daedalus/e2e-openshell:latest")
+    );
+
+    store
+        .set_backend_image(BackendKind::OpenShell, Some("  "))
+        .unwrap();
+    assert_eq!(store.backend_image(BackendKind::OpenShell).unwrap(), None);
+}
+
+#[test]
 fn concurrency_limit_and_stall_interval_survive_core_restart() {
     // G6+G15: the concurrency limit and stall interval are persisted operator
     // configuration — like idle rates, they survive a Core rebuild over the same store

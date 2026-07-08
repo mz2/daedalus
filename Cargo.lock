@@ -1481,6 +1481,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "daedalus-backend-openshell"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "daedalus-backend",
+ "daedalus-proto",
+ "daedalus-zellij",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "daedalus-backend-workshop"
 version = "0.1.0"
 dependencies = [
@@ -1519,10 +1531,12 @@ dependencies = [
 name = "daedalus-desktop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "daedalus-app",
  "daedalus-backend",
  "daedalus-backend-fake",
+ "daedalus-backend-openshell",
  "daedalus-backend-workshop",
  "daedalus-core",
  "daedalus-discovery",
@@ -1578,6 +1592,7 @@ dependencies = [
  "daedalus-app",
  "daedalus-backend",
  "daedalus-backend-fake",
+ "daedalus-backend-openshell",
  "daedalus-backend-workshop",
  "daedalus-core",
  "daedalus-discovery",
@@ -1597,6 +1612,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "daedalus-proto",
+ "portable-pty",
  "thiserror 2.0.18",
  "tokio",
 ]

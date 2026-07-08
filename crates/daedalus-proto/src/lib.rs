@@ -46,5 +46,12 @@ mod tests {
         assert_eq!(SessionStatus::Unknown.as_str(), "unknown");
         assert_eq!(TaskStatus::InProgress.as_str(), "in_progress");
         assert_eq!(BackendKind::Workshop.as_str(), "workshop");
+        // The persisted serde token matches the `DAEDALUS_BACKEND` token (idle-rate keys
+        // in the settings store round-trip through serde — persist::text_to_enum).
+        assert_eq!(BackendKind::OpenShell.as_str(), "openshell");
+        assert_eq!(
+            serde_json::to_value(BackendKind::OpenShell).unwrap(),
+            serde_json::json!("openshell")
+        );
     }
 }

@@ -158,6 +158,11 @@ pub enum SourceKind {
 pub enum BackendKind {
     /// Canonical Workshop (Linux).
     Workshop,
+    /// NVIDIA OpenShell — kernel-sandboxed agent runtime; Linux hosts (GPU-capable via the
+    /// NVIDIA Container Toolkit) and macOS on Apple silicon (enforcement inside the Docker
+    /// Desktop Linux VM, no GPU). Issue #9.
+    #[serde(rename = "openshell")]
+    OpenShell,
     /// In-memory fake backend for local testing (Principle III).
     Fake,
 }
@@ -168,6 +173,7 @@ impl BackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             BackendKind::Workshop => "workshop",
+            BackendKind::OpenShell => "openshell",
             BackendKind::Fake => "fake",
         }
     }

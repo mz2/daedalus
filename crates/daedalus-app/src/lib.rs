@@ -91,6 +91,10 @@ impl App {
                 self.core.set_concurrency_limit(limit)?;
                 Ok(CommandResult::Done)
             }
+            Command::SetBackendImage { backend, image } => {
+                self.core.set_backend_image(backend, image.as_deref())?;
+                Ok(CommandResult::Done)
+            }
             Command::SetStallInterval(secs) => {
                 self.core.set_stall_interval(secs)?;
                 Ok(CommandResult::Done)

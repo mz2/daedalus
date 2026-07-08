@@ -148,6 +148,10 @@ pub struct Core {
     pub(crate) events: broadcast::Sender<AppEvent>,
     pub(crate) runtime: Mutex<HashMap<SessionId, RuntimeHandle>>,
     pub(crate) delivered_input: Mutex<HashMap<SessionId, Vec<Bytes>>>,
+    /// The live attach's input sink per session (FR-023): operator input is written into
+    /// the attached terminal (the PTY bridge for real backends) — retained here because
+    /// the channel itself is handed to the surface.
+    pub(crate) attach_input: Mutex<HashMap<SessionId, daedalus_zellij::ByteSink>>,
     /// Compiled prompt-pattern regexes per tool (validated at registration), so the
     /// output path never recompiles per chunk (FR-015b).
     pub(crate) prompt_patterns: Mutex<HashMap<ToolId, regex::Regex>>,
@@ -191,6 +195,7 @@ impl Core {
             events,
             runtime: Mutex::new(HashMap::new()),
             delivered_input: Mutex::new(HashMap::new()),
+            attach_input: Mutex::new(HashMap::new()),
             prompt_patterns: Mutex::new(HashMap::new()),
         }
     }
@@ -220,6 +225,23 @@ impl Core {
     /// Set (or clear) the per-backend idle rate used for waiting-cost estimates
     /// (FR-021b): applied to the registry immediately and persisted so it survives
     /// restart.
+    /// Set (or clear) the persisted sandbox image for a backend kind — operator
+    /// configuration lives in the app (Settings), not in shell environment variables.
+    pub fn set_backend_image(
+        &self,
+        kind: BackendKind,
+        image: Option<&str>,
+    ) -> Result<(), CoreError> {
+        self.store.set_backend_image(kind, image)?;
+        Ok(())
+    }
+
+    /// The persisted sandbox image for a backend kind, if configured.
+    #[must_use]
+    pub fn backend_image(&self, kind: BackendKind) -> Option<String> {
+        self.store.backend_image(kind).ok().flatten()
+    }
+
     pub fn set_idle_rate(&self, kind: BackendKind, rate: Option<f64>) -> Result<(), CoreError> {
         self.backends.set_idle_rate(kind, rate);
         self.store.set_backend_idle_rate(kind, rate)?;
@@ -485,55 +507,63 @@ impl Core {
             .await
             .map_err(|e| CoreError::NotAttachable(e.to_string()))?;
 
+        // Retain the input sink so `send_input` reaches this live attach (FR-023).
+        self.attach_input
+            .lock()
+            .expect("poisoned")
+            .insert(id, channel.input.clone());
         let (ui_tx, ui_rx) = mpsc::channel::<Bytes>(1024);
         let core = Arc::clone(self);
         let mut output = channel.output;
         tokio::spawn(async move {
-            // One stateful redactor per attach: buffers across chunks so secrets, PEM
-            // blocks, prompt patterns, and multi-byte codepoints split at a PTY chunk
-            // boundary are handled on complete lines rather than leaking / corrupting.
+            // Two framings over one stream, both redacted (C-T4):
+            //
+            // * Persistence + prompt detection use the STATEFUL line-framed redactor —
+            //   buffers across chunks so secrets, PEM blocks, prompt patterns, and split
+            //   codepoints are handled on complete lines (never leak into the record).
+            // * The LIVE VIEW gets each chunk immediately with per-chunk redaction: a TUI
+            //   stream (zellij redraw) is escape sequences with almost no newlines, and
+            //   line-buffering it holds the entire UI hostage until the client exits
+            //   (the "only 'Bye from Zellij' ever renders" bug, 2026-07-08). Per-chunk
+            //   redaction is the pre-#15 guarantee level for the on-screen bytes; the
+            //   persisted record keeps the stronger cross-chunk guarantee.
             let mut redactor = redact::Redactor::new();
             'stream: while let Some(chunk) = output.recv().await {
-                let redacted = redactor.push(&chunk);
-                if !core.forward_redacted(id, &redacted, &ui_tx).await {
+                let framed = redactor.push(&chunk);
+                core.persist_and_observe(id, &framed);
+                let view = redact::redact_bytes(&chunk);
+                if !view.is_empty() && ui_tx.send(view).await.is_err() {
                     break 'stream;
                 }
             }
-            // Stream ended: emit any buffered partial line so trailing output isn't lost.
+            // Stream ended: persist any buffered partial line so the record is complete
+            // (the view already saw those bytes per-chunk).
             let remainder = redactor.flush();
-            let _ = core.forward_redacted(id, &remainder, &ui_tx).await;
+            core.persist_and_observe(id, &remainder);
         });
 
         Ok(TerminalChannel {
             output: ui_rx,
             input: channel.input,
+            // Geometry updates bypass capture — they go to the attach's PTY, not the
+            // byte stream.
+            resize: channel.resize,
         })
     }
 
-    /// Persist, observe, and forward one batch of already-redacted (line-complete) bytes.
-    /// Ordering is load-bearing (contract `terminal-attach.md`, exercised by
-    /// `tests/contract/terminal_attach.rs`): persist to the capture store **before** the
-    /// bytes are forwarded to the surface or event stream. Empty batches (a chunk that did
-    /// not complete a line) are skipped. Returns `false` when the surface channel closed.
-    async fn forward_redacted(
-        &self,
-        id: SessionId,
-        redacted: &Bytes,
-        ui_tx: &mpsc::Sender<Bytes>,
-    ) -> bool {
+    /// Persist and observe one batch of line-framed redacted bytes: append to the capture
+    /// store, run waiting-for-input detection (FR-015b), and fan out on the event stream.
+    /// Empty batches (a chunk that completed no line yet) are skipped.
+    fn persist_and_observe(&self, id: SessionId, redacted: &Bytes) {
         if redacted.is_empty() {
-            return true;
+            return;
         }
-        // 1) Persist first (record-before-forward).
         let _ = self.store.append_output(id, clock::now(), redacted);
-        // 2) Waiting-for-input detection over the observed (redacted, line-complete) stream.
         let _ = self.observe_output(id, &String::from_utf8_lossy(redacted));
-        // 3) Fan out to the event stream, then the surface channel.
         let _ = self.events.send(AppEvent::Output {
             id,
             chunk: RedactedBytes(redacted.to_vec()),
         });
-        ui_tx.send(redacted.clone()).await.is_ok()
     }
 }
 

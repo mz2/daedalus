@@ -13,6 +13,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
+portable-pty = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }

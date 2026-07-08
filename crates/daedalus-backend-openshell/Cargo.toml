@@ -1,0 +1,19 @@
+[package]
+name = "daedalus-backend-openshell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NVIDIA OpenShell sandbox backend for Daedalus (kernel-sandboxed agent runtime; GPU-capable on Linux hosts)."
+
+[dependencies]
+daedalus-proto = { workspace = true }
+daedalus-backend = { workspace = true }
+daedalus-zellij = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

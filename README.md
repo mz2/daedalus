@@ -30,7 +30,8 @@ crates/
   daedalus-backend/           the Backend trait + provisioning value types
   daedalus-backend-fake/      in-memory backend for local testing (no Workshop needed)
   daedalus-backend-workshop/  Canonical Workshop (Linux) backend
-  daedalus-backend-macos/     macOS local sandbox backend (Seatbelt / App Sandbox)
+  daedalus-backend-openshell/ NVIDIA OpenShell backend (kernel-sandboxed agent runtime;
+                              Linux GPU-capable, macOS on Apple silicon via Docker Desktop)
   daedalus-zellij/            zellij multiplexing/attach + terminal-channel glue
   daedalus-sdk/               in-Workshop advertisement + SpecKit tasks.md parser
   daedalus-discovery/         local / mDNS / tunnel sources + stable-identity de-duplication
@@ -61,7 +62,10 @@ and [`research.md`](specs/001-agent-orchestration/research.md) for the design de
     xcodebuild -downloadComponent MetalToolchain
     ```
   - **Linux/Nix**: `nix develop` (or `source scripts/gpui-env.sh`) provides the libs.
-- macOS only, for the `macos` backend: `sandbox-exec` (system-provided).
+- Optional, for the `openshell` backend's real-sandbox tests: the
+  [OpenShell](https://docs.nvidia.com/openshell/home) CLI and a running Docker daemon
+  (Docker Desktop on macOS/Apple silicon) — see [Testing](#testing) below. Without them the
+  real-backend test legs skip; everything else runs hermetically.
 
 ## Build · run · test · lint
 
@@ -97,6 +101,99 @@ The window shows the title bar with live status counts, a backends sidebar, and 
 [`justfile`](justfile) wraps everything as `just build|run|run-gpui|test|lint`. The default
 headless build keeps CI and local TDD fast; the GPUI renderer is opt-in (research risk R-UI).
 See [`specs/001-agent-orchestration/quickstart.md`](specs/001-agent-orchestration/quickstart.md).
+
+## Testing
+
+Every change must be verifiable locally (constitution Principle III). The suite is layered:
+the hermetic tiers always run; the real-backend tiers **self-activate** when their runtime is
+present and skip silently when it is not — no flags, no separate test lists.
+
+### 1. Hermetic suite (no sandbox runtime required)
+
+```bash
+cargo test --workspace                 # unit + contract + integration, all backends mocked
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Backend-specific contract tests run against scripted controls, so CLI invocation shapes and
+failure paths are asserted without the real binaries, e.g.:
+
+```bash
+cargo test -p daedalus-tests --test contract_openshell_backend
+```
+
+### 2. Real-backend integration (OpenShell)
+
+Requires the `openshell` CLI (installs a local gateway) and a running Docker daemon —
+macOS/Apple silicon with Docker Desktop, or Linux:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
+openshell status                       # expect: Status: Connected
+```
+
+The SC-008 portability leg then runs the identical operator lifecycle against a **live
+sandbox** (create → start → monitor → send input → stop → clean up → delete):
+
+```bash
+cargo test -p daedalus-tests --test integration_portability -- --nocapture
+openshell sandbox list                 # expect: no daedalus-* sandboxes left behind
+```
+
+(A host-side `zellij: command not found` line is harmless if zellij isn't installed on the
+host; the attach story inside sandboxes is tracked on issue #9.)
+
+### 3. Offline agent E2E (real agent, local model, zero egress)
+
+The strongest end-to-end proof (issue #19): a real coding agent (**opencode**) driven by a
+tiny local model (**gemma4:e2b** via ollama, baked into the image at build time) fixes a
+fixture bug inside an OpenShell sandbox — under the same deny-all egress policy Daedalus
+generates for every session. No API keys, no network, no providers:
+
+```bash
+docker build -t daedalus/e2e-openshell:latest tests/e2e/openshell/   # one-time, ~5 GB
+cargo test -p daedalus-tests --test integration_openshell_e2e -- --nocapture
+```
+
+Self-activating: skips unless `openshell` + Docker + the image are present. Budget ~10
+minutes — the model runs on CPU inside the Docker VM. The test tears its sandbox down on
+every path and asserts the outcome (`add(3, 4) == 7`), not the transcript.
+
+The same suite also covers the **launch + attach + stop** path (fast, ~3s):
+`start_agent` creates a detached zellij session inside a live sandbox with the tool
+running in it; the embedded-terminal bridge (`ProcessTerminal` on a local PTY →
+`sandbox exec --tty … -- zellij attach`) receives live terminal bytes; `stop` kills the
+session in-sandbox. A failed launch is a detected `StartFailed` (env + sandbox torn
+down), never a phantom-Running session.
+
+### 4. Manual policy smoke (what the backend enforces)
+
+Inspect and verify the per-session confinement by hand — deny-all egress means the `curl`
+must fail with `CONNECT tunnel failed, response 403`:
+
+```bash
+cat > /tmp/probe-policy.yaml <<'EOF'
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock: {compatibility: best_effort}
+network_policies: {}
+EOF
+openshell sandbox create --name probe --policy /tmp/probe-policy.yaml \
+  --no-auto-providers --no-tty -- echo ok
+openshell sandbox exec -n probe --no-tty --timeout 15 -- curl -sS -m 5 https://example.com \
+  && echo "UNEXPECTED: egress allowed" || echo "egress blocked (expected)"
+openshell sandbox delete probe
+```
+
+### 5. In the app
+
+`DAEDALUS_BACKEND=openshell cargo run -p daedalus-desktop` (add `--features gpui` for the
+window). The backends view shows OpenShell **Available** when the CLI + Docker are up,
+**Degraded** with a stated reason when Docker is stopped, **Unavailable** when the CLI is
+missing (FR-028).
 
 ## Development workflow
 
