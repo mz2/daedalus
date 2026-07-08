@@ -276,6 +276,12 @@ struct AppRoot {
     /// Whether a launch was attempted with invalid fields (drives the footer-hint error
     /// copy, prototype `start-foot-hint`).
     start_attempted: bool,
+    /// A launch is in flight (sandbox provisioning + agent launch take ~10s on real
+    /// backends): the footer states it instead of appearing hung.
+    start_in_flight: bool,
+    /// A terminal attach is in flight (bridge + gateway handshake, ~2-3s): the pane
+    /// states it instead of showing the stale captured-output fallback.
+    terminal_attaching: bool,
     // Tool-form toggle.
     tool_accepts_input: bool,
     // Theme preference (System follows the OS appearance — FR-009a, default).
@@ -418,6 +424,8 @@ impl AppRoot {
             start_origin: Origin::Fresh,
             start_backend: BackendKind::Fake,
             start_attempted: false,
+            start_in_flight: false,
+            terminal_attaching: false,
             tool_accepts_input: true,
             theme_pref: ThemePreference::default(),
             os_appearance: os,
@@ -509,6 +517,7 @@ impl AppRoot {
     /// Attach the embedded terminal for `id` through the core capture path — used by both
     /// the open-session path and the start-flow's jump into a freshly started session.
     fn attach_terminal(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.terminal_attaching = true;
         let app = self.app.clone();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
@@ -534,6 +543,7 @@ impl AppRoot {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.terminal_attaching = false;
                 // A newer open (or a navigation away) supersedes this attach.
                 if this.view != View::Session(id) {
                     return;
@@ -1105,6 +1115,8 @@ impl AppRoot {
         // is watching it, not scanning the fleet); on failure surface the stated reason
         // and STAY on the Start form rather than optimistically leaving so a rejected
         // start looks like it worked.
+        self.start_in_flight = true;
+        cx.notify();
         let app = self.app.clone();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
@@ -1112,6 +1124,7 @@ impl AppRoot {
                 .spawn(async move { app.execute(Command::StartSession(req)).await })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.start_in_flight = false;
                 match outcome {
                     Ok(Ok(daedalus_app::CommandResult::SessionStarted(id))) => {
                         this.last_error = None;
@@ -1540,6 +1553,16 @@ impl AppRoot {
                 .overflow_hidden()
                 .bg(gpui::rgba(0x000000a0))
                 .child(term.clone())
+                .into_any_element()
+        } else if self.terminal_attaching {
+            div()
+                .w_full()
+                .p_3()
+                .rounded_md()
+                .bg(gpui::rgba(0x00000040))
+                .text_sm()
+                .opacity(0.75)
+                .child("Attaching to the sandbox terminal…")
                 .into_any_element()
         } else if let Some(reason) = &self.terminal_error {
             div()
