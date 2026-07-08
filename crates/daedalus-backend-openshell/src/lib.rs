@@ -395,9 +395,19 @@ impl Backend for OpenShellBackend {
         let mut create = args(&["sandbox", "create", "--name", &name]);
         create.push("--policy".into());
         create.push(policy_path.to_string_lossy().into_owned());
-        if let Some(image) = self.control.sandbox_image() {
-            create.push("--from".into());
-            create.push(image);
+        match self.control.sandbox_image() {
+            Some(image) => {
+                tracing::info!("openshell: creating sandbox {name} from image {image}");
+                create.push("--from".into());
+                create.push(image);
+            }
+            // The default base image carries no multiplexer or agent toolchain — say so
+            // up front instead of letting the attach discover it (operator trap seen
+            // 2026-07-08: DAEDALUS_OPENSHELL_FROM unset in the app's environment).
+            None => tracing::warn!(
+                "openshell: creating sandbox {name} from the DEFAULT base image \
+                 (no zellij/agent tools) — set DAEDALUS_OPENSHELL_FROM to change this"
+            ),
         }
         if let Some(cpu) = limits.cpu_cores {
             create.push("--cpu".into());
