@@ -36,12 +36,12 @@ async fn operator_actions_are_recorded_on_the_session_timeline() {
     fx.core.stop_session(id).await.unwrap();
     fx.core.clean_up(id).await.unwrap();
 
-    // start / input-sent / stop / clean-up, in order (FR-019a).
+    // start / stop / clean-up, in order (FR-019a). Input is deliberately NOT an
+    // operator-action event: live typing would spam one entry per keystroke.
     assert_eq!(
         operator_actions(&fx, id),
         vec![
             OperatorAction::Start,
-            OperatorAction::InputSent,
             OperatorAction::Stop,
             OperatorAction::CleanUp,
         ]

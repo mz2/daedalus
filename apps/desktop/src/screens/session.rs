@@ -168,6 +168,7 @@ fn action_label(action: OperatorAction) -> &'static str {
     match action {
         OperatorAction::Start => "Started by operator",
         OperatorAction::Stop => "Stop requested by operator",
+        // Historic only — no longer recorded (per-keystroke noise since live typing).
         OperatorAction::InputSent => "Input sent by operator",
         OperatorAction::ConfirmCompletion => "Completion confirmed by operator",
         OperatorAction::CleanUp => "Environment cleaned up",

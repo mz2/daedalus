@@ -68,6 +68,11 @@ RUN mkdir -p /sandbox/.config/zellij/layouts \
     && printf 'layout {\n    pane\n}\n' > /sandbox/.config/zellij/layouts/bare.kdl \
     && chown -R sandbox:sandbox /sandbox/.config/zellij
 
+# with-local-model: ensure ollama is serving, then exec the agent — register tools as
+# `with-local-model opencode …` so no shell wrapper is needed per tool.
+RUN printf '#!/bin/sh\nif ! ollama list >/dev/null 2>&1; then\n  nohup ollama serve >>/tmp/ollama.log 2>&1 &\n  i=0; while [ $i -lt 60 ]; do ollama list >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done\nfi\nexec "$@"\n' > /usr/local/bin/with-local-model \
+    && chmod 0755 /usr/local/bin/with-local-model
+
 # Agent + fixture land in the sandbox user's home.
 COPY --chown=sandbox:sandbox opencode.json /sandbox/.config/opencode/opencode.json
 COPY --chown=sandbox:sandbox fixture/ /sandbox/fixture/

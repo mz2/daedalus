@@ -92,7 +92,10 @@ impl Core {
             }
         }
 
-        self.record_operator_action(id, OperatorAction::InputSent);
+        // Deliberately NOT recorded on the timeline: with the live terminal, every
+        // keystroke routes through here — an "Input sent by operator" entry per key is
+        // noise, not signal (operator call, 2026-07-08). Delivery is still observable
+        // via `delivered_input` and the captured output itself.
 
         // Answering a waiting session returns it to Running and clears the pending
         // prompt + waiting anchor (FR-015b).
