@@ -58,10 +58,14 @@ RUN set -eux; \
     install -m 0755 "$(find /root -name opencode -type f | head -1)" /usr/local/bin/opencode; \
     opencode --version
 
-# zellij: simplified ASCII UI — the embedded terminal's font set has no powerline /
-# special glyphs, which otherwise render as "?" in the pane chrome.
-RUN mkdir -p /sandbox/.config/zellij \
-    && printf 'simplified_ui true\npane_frames false\n' > /sandbox/.config/zellij/config.kdl \
+# zellij: minimal chrome. Daedalus draws its own session UI around the pane, so the
+# multiplexer presents none: a bare layout (no tab bar / status bar / pane frames), the
+# simplified ASCII UI (the embedded terminal's font set has no powerline glyphs — they
+# render as "?"), and no startup tips.
+RUN mkdir -p /sandbox/.config/zellij/layouts \
+    && printf 'simplified_ui true\npane_frames false\ndefault_layout "bare"\nshow_startup_tips false\n' \
+         > /sandbox/.config/zellij/config.kdl \
+    && printf 'layout {\n    pane\n}\n' > /sandbox/.config/zellij/layouts/bare.kdl \
     && chown -R sandbox:sandbox /sandbox/.config/zellij
 
 # Agent + fixture land in the sandbox user's home.
