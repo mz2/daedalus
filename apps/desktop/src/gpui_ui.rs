@@ -548,6 +548,11 @@ impl AppRoot {
                             // thread: stale geometry is superseded, never blocks.
                             TerminalView::new(writer, reader, config, cx).with_resize_callback(
                                 move |cols, rows| {
+                                    // Ignore degenerate mid-layout sizes — a 0x0 winsize
+                                    // makes the remote zellij client exit.
+                                    if cols < 10 || rows < 3 {
+                                        return;
+                                    }
                                     let _ = resize.try_send(daedalus_zellij::TerminalSize {
                                         cols: cols.min(u16::MAX as usize) as u16,
                                         rows: rows.min(u16::MAX as usize) as u16,

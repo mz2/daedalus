@@ -208,6 +208,11 @@ impl TerminalAttach for ProcessTerminal {
         let master = pair.master;
         std::thread::spawn(move || {
             while let Some(size) = resize_rx.blocking_recv() {
+                // Degenerate sizes (a view mid-layout reports 0x0/1x1) would make the
+                // TUI client on the far end exit ("Bye from Zellij") — never forward them.
+                if size.cols < 10 || size.rows < 3 {
+                    continue;
+                }
                 let _ = master.resize(portable_pty::PtySize {
                     rows: size.rows,
                     cols: size.cols,
