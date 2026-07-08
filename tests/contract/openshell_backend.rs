@@ -428,19 +428,15 @@ async fn start_agent_launches_a_detached_zellij_session_with_the_tool() {
     );
 
     let run = &execs[2];
-    let sep = run.iter().position(|a| a == "--").expect("separator");
-    assert_eq!(
-        &run[sep + 1..],
-        &[
-            "zellij".to_string(),
-            "--session".into(),
-            handle.zellij_session.clone(),
-            "run".into(),
-            "--".into(),
-            "claude".into(),
-            "--continue".into()
-        ]
+    let joined = run.join(" ");
+    assert!(joined.contains("zellij --session"), "{joined}");
+    assert!(joined.contains(&handle.zellij_session), "{joined}");
+    // The pane announces what is launching, then execs the tool (quoted).
+    assert!(
+        joined.contains("[daedalus] launching: claude --continue"),
+        "{joined}"
     );
+    assert!(joined.contains("exec 'claude' '--continue'"), "{joined}");
 }
 
 // Without zellij in the image, the tool still launches — direct detached exec (nohup)

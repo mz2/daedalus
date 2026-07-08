@@ -509,9 +509,24 @@ impl Backend for OpenShellBackend {
                 if let Err(reason) = require_success(create, "zellij session create") {
                     return Err(self.abort_start(env, reason).await);
                 }
+                // The pane states what is running before the tool draws anything —
+                // otherwise a slow-starting agent looks like an anonymous spinner.
+                let display = std::iter::once(tool.program.as_str())
+                    .chain(tool.args.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let words: Vec<String> = std::iter::once(&tool.program)
+                    .chain(tool.args.iter())
+                    .map(|w| sh_quote(w))
+                    .collect();
+                let script = format!(
+                    "echo {}; exec {}",
+                    sh_quote(&format!("[daedalus] launching: {display}")),
+                    words.join(" ")
+                );
                 let mut run_tool = args(&["zellij", "--session", &zellij_session, "run", "--"]);
-                run_tool.push(tool.program.clone());
-                run_tool.extend(tool.args.iter().cloned());
+                run_tool.extend(args(&["sh", "-c"]));
+                run_tool.push(script);
                 if let Err(reason) =
                     require_success(self.exec_in(env, 30, &run_tool).await, "agent launch")
                 {
