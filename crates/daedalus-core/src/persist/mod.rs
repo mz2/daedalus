@@ -401,6 +401,39 @@ impl Store {
         Ok(out)
     }
 
+    /// Set (or clear) the persisted per-backend sandbox image (e.g. OpenShell's
+    /// `sandbox create --from`). Operator configuration lives in the app, not in shell
+    /// environment variables; survives restart.
+    pub fn set_backend_image(
+        &self,
+        kind: BackendKind,
+        image: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let key = format!("sandbox_image.{}", enum_to_text(&kind)?);
+        match image {
+            Some(image) if !image.trim().is_empty() => {
+                conn.execute(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+                    (key, image.trim()),
+                )?;
+            }
+            _ => {
+                conn.execute("DELETE FROM config WHERE key = ?1", [key])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The persisted sandbox image for a backend kind, if configured.
+    pub fn backend_image(&self, kind: BackendKind) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock().expect("poisoned");
+        let key = format!("sandbox_image.{}", enum_to_text(&kind)?);
+        let mut stmt = conn.prepare_cached("SELECT value FROM config WHERE key = ?1")?;
+        let mut rows = stmt.query_map([key], |r| r.get::<_, String>(0))?;
+        Ok(rows.next().transpose()?)
+    }
+
     /// Set (or clear with `None` = unlimited) the persisted concurrency limit (FR-026,
     /// G6/G15). Configuration survives restart; `None` deletes the key so the reseed keeps
     /// the process default.

@@ -84,6 +84,7 @@ struct Inputs {
     concurrency: Entity<InputState>,
     stall: Entity<InputState>,
     idle_rate: Entity<InputState>,
+    openshell_image: Entity<InputState>,
 }
 
 /// Open the Daedalus window and run the GPUI event loop (blocks the main thread).
@@ -157,6 +158,10 @@ pub fn run(app: App, handle: Handle) {
                             InputState::new(window, cx)
                                 .placeholder("Idle rate $/hr (blank = no estimate)")
                         }),
+                        openshell_image: cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder("e.g. daedalus/e2e-openshell:latest")
+                        }),
                     };
                     // Pre-fill sensible defaults.
                     inputs
@@ -169,6 +174,17 @@ pub fn run(app: App, handle: Handle) {
                     inputs.stall.update(cx, |s, cx| {
                         s.set_value(cfg.stall_interval_secs.to_string(), window, cx)
                     });
+                    // Seed the persisted OpenShell image so Settings shows what is in
+                    // force (store value, else the env fallback the backend would use).
+                    let image = app
+                        .core()
+                        .backend_image(daedalus_proto::BackendKind::OpenShell)
+                        .or_else(|| std::env::var("DAEDALUS_OPENSHELL_FROM").ok());
+                    if let Some(image) = image.filter(|s| !s.is_empty()) {
+                        inputs
+                            .openshell_image
+                            .update(cx, |s, cx| s.set_value(image, window, cx));
+                    }
                     if let Some(limit) = cfg.concurrency_limit {
                         inputs
                             .concurrency
@@ -2047,6 +2063,13 @@ impl AppRoot {
                     &format!("Idle rate for {idle_backend:?} ($/hr, blank = none)"),
                     div().child(Input::new(&self.inputs.idle_rate)),
                 ))
+                .child(field(
+                    // The image OpenShell sandboxes are created from (`--from`) —
+                    // operator configuration owned by the app, persisted in the store;
+                    // blank restores the default base image.
+                    "OpenShell sandbox image (blank = default base image)",
+                    div().child(Input::new(&self.inputs.openshell_image)),
+                ))
                 .child(
                     Button::new("save-settings")
                         .primary()
@@ -2087,6 +2110,16 @@ impl AppRoot {
                                     cx,
                                 );
                             }
+                            // OpenShell sandbox image: persisted in the app, no env
+                            // vars required; blank clears back to the default image.
+                            let image = this.input_value(&this.inputs.openshell_image, cx);
+                            this.dispatch(
+                                Command::SetBackendImage {
+                                    backend: daedalus_proto::BackendKind::OpenShell,
+                                    image: (!image.is_empty()).then_some(image),
+                                },
+                                cx,
+                            );
                             cx.notify();
                         })),
                 ),

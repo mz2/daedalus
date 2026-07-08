@@ -159,7 +159,7 @@ async fn run_agent_journey(control: &dyn OpenShellControl, name: &str) -> Result
 // into a sandbox lacking the tool fails DETECTED (no phantom-Running).
 #[tokio::test]
 async fn start_agent_launches_and_stop_kills_inside_a_real_sandbox() {
-    let control = Arc::new(E2eControl(CliOpenShellControl));
+    let control = Arc::new(E2eControl(CliOpenShellControl::default()));
     let backend = OpenShellBackend::new(control.clone());
     if backend.availability().await != Availability::Available
         || !e2e_image_present(control.as_ref()).await
@@ -306,7 +306,7 @@ async fn start_agent_launches_and_stop_kills_inside_a_real_sandbox() {
 
 #[tokio::test]
 async fn agent_fixes_the_fixture_offline_under_deny_all_policy() {
-    let control = Arc::new(E2eControl(CliOpenShellControl));
+    let control = Arc::new(E2eControl(CliOpenShellControl::default()));
     let backend = OpenShellBackend::new(control.clone());
     if backend.availability().await != Availability::Available
         || !e2e_image_present(control.as_ref()).await

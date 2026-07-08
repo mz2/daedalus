@@ -1531,6 +1531,7 @@ dependencies = [
 name = "daedalus-desktop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "daedalus-app",
  "daedalus-backend",

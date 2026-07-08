@@ -220,6 +220,23 @@ impl Core {
     /// Set (or clear) the per-backend idle rate used for waiting-cost estimates
     /// (FR-021b): applied to the registry immediately and persisted so it survives
     /// restart.
+    /// Set (or clear) the persisted sandbox image for a backend kind — operator
+    /// configuration lives in the app (Settings), not in shell environment variables.
+    pub fn set_backend_image(
+        &self,
+        kind: BackendKind,
+        image: Option<&str>,
+    ) -> Result<(), CoreError> {
+        self.store.set_backend_image(kind, image)?;
+        Ok(())
+    }
+
+    /// The persisted sandbox image for a backend kind, if configured.
+    #[must_use]
+    pub fn backend_image(&self, kind: BackendKind) -> Option<String> {
+        self.store.backend_image(kind).ok().flatten()
+    }
+
     pub fn set_idle_rate(&self, kind: BackendKind, rate: Option<f64>) -> Result<(), CoreError> {
         self.backends.set_idle_rate(kind, rate);
         self.store.set_backend_idle_rate(kind, rate)?;

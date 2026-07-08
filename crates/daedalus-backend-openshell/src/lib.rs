@@ -70,10 +70,26 @@ pub trait OpenShellControl: Send + Sync {
 
 /// Default control resolving the `openshell` CLI from `DAEDALUS_OPENSHELL_CMD` or `PATH`,
 /// and probing the container runtime via the `docker` CLI.
-#[derive(Debug, Default)]
-pub struct CliOpenShellControl;
+#[derive(Default)]
+pub struct CliOpenShellControl {
+    /// Operator-configured image source — the app's persisted Settings value, consulted
+    /// before the `DAEDALUS_OPENSHELL_FROM` environment fallback so configuration lives
+    /// in the app, not the launching shell.
+    image_source: Option<std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+}
 
 impl CliOpenShellControl {
+    /// A control whose sandbox image comes from the given source (e.g. the app's
+    /// persisted Settings), with the environment variable as fallback.
+    #[must_use]
+    pub fn with_image_source(
+        source: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            image_source: Some(source),
+        }
+    }
+
     fn binary(&self) -> Option<String> {
         if let Ok(cmd) = std::env::var("DAEDALUS_OPENSHELL_CMD") {
             if !cmd.is_empty() {
@@ -109,9 +125,14 @@ impl OpenShellControl for CliOpenShellControl {
     }
 
     fn sandbox_image(&self) -> Option<String> {
-        std::env::var("DAEDALUS_OPENSHELL_FROM")
-            .ok()
-            .filter(|s| !s.is_empty())
+        self.image_source
+            .as_ref()
+            .and_then(|source| source())
+            .or_else(|| {
+                std::env::var("DAEDALUS_OPENSHELL_FROM")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
     }
 
     async fn run(&self, args: &[String]) -> Result<CliOutput, String> {
@@ -225,7 +246,7 @@ pub struct OpenShellBackend {
 
 impl Default for OpenShellBackend {
     fn default() -> Self {
-        Self::new(Arc::new(CliOpenShellControl))
+        Self::new(Arc::new(CliOpenShellControl::default()))
     }
 }
 

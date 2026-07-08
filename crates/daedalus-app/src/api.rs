@@ -51,6 +51,16 @@ pub enum Command {
     /// Set (or clear with `None` = unlimited) the maximum concurrent sessions (FR-026);
     /// persisted so it survives restart.
     SetConcurrencyLimit(Option<usize>),
+    /// Set (or clear with `None`/empty) a backend's sandbox image (e.g. OpenShell's
+    /// `sandbox create --from`); persisted so operator configuration lives in the app,
+    /// not shell environment variables.
+    SetBackendImage {
+        /// Which backend kind the image applies to.
+        backend: daedalus_proto::BackendKind,
+        /// Image reference / community name / Dockerfile path; `None` restores the
+        /// backend's default image.
+        image: Option<String>,
+    },
     /// Set the stall interval in seconds (FR-020); persisted so it survives restart.
     SetStallInterval(u64),
 }
