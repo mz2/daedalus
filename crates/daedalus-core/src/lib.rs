@@ -516,19 +516,30 @@ impl Core {
         let core = Arc::clone(self);
         let mut output = channel.output;
         tokio::spawn(async move {
-            // One stateful redactor per attach: buffers across chunks so secrets, PEM
-            // blocks, prompt patterns, and multi-byte codepoints split at a PTY chunk
-            // boundary are handled on complete lines rather than leaking / corrupting.
+            // Two framings over one stream, both redacted (C-T4):
+            //
+            // * Persistence + prompt detection use the STATEFUL line-framed redactor —
+            //   buffers across chunks so secrets, PEM blocks, prompt patterns, and split
+            //   codepoints are handled on complete lines (never leak into the record).
+            // * The LIVE VIEW gets each chunk immediately with per-chunk redaction: a TUI
+            //   stream (zellij redraw) is escape sequences with almost no newlines, and
+            //   line-buffering it holds the entire UI hostage until the client exits
+            //   (the "only 'Bye from Zellij' ever renders" bug, 2026-07-08). Per-chunk
+            //   redaction is the pre-#15 guarantee level for the on-screen bytes; the
+            //   persisted record keeps the stronger cross-chunk guarantee.
             let mut redactor = redact::Redactor::new();
             'stream: while let Some(chunk) = output.recv().await {
-                let redacted = redactor.push(&chunk);
-                if !core.forward_redacted(id, &redacted, &ui_tx).await {
+                let framed = redactor.push(&chunk);
+                core.persist_and_observe(id, &framed);
+                let view = redact::redact_bytes(&chunk);
+                if !view.is_empty() && ui_tx.send(view).await.is_err() {
                     break 'stream;
                 }
             }
-            // Stream ended: emit any buffered partial line so trailing output isn't lost.
+            // Stream ended: persist any buffered partial line so the record is complete
+            // (the view already saw those bytes per-chunk).
             let remainder = redactor.flush();
-            let _ = core.forward_redacted(id, &remainder, &ui_tx).await;
+            core.persist_and_observe(id, &remainder);
         });
 
         Ok(TerminalChannel {
@@ -540,30 +551,19 @@ impl Core {
         })
     }
 
-    /// Persist, observe, and forward one batch of already-redacted (line-complete) bytes.
-    /// Ordering is load-bearing (contract `terminal-attach.md`, exercised by
-    /// `tests/contract/terminal_attach.rs`): persist to the capture store **before** the
-    /// bytes are forwarded to the surface or event stream. Empty batches (a chunk that did
-    /// not complete a line) are skipped. Returns `false` when the surface channel closed.
-    async fn forward_redacted(
-        &self,
-        id: SessionId,
-        redacted: &Bytes,
-        ui_tx: &mpsc::Sender<Bytes>,
-    ) -> bool {
+    /// Persist and observe one batch of line-framed redacted bytes: append to the capture
+    /// store, run waiting-for-input detection (FR-015b), and fan out on the event stream.
+    /// Empty batches (a chunk that completed no line yet) are skipped.
+    fn persist_and_observe(&self, id: SessionId, redacted: &Bytes) {
         if redacted.is_empty() {
-            return true;
+            return;
         }
-        // 1) Persist first (record-before-forward).
         let _ = self.store.append_output(id, clock::now(), redacted);
-        // 2) Waiting-for-input detection over the observed (redacted, line-complete) stream.
         let _ = self.observe_output(id, &String::from_utf8_lossy(redacted));
-        // 3) Fan out to the event stream, then the surface channel.
         let _ = self.events.send(AppEvent::Output {
             id,
             chunk: RedactedBytes(redacted.to_vec()),
         });
-        ui_tx.send(redacted.clone()).await.is_ok()
     }
 }
 

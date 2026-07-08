@@ -107,7 +107,9 @@ pub fn run(app: App, handle: Handle) {
                 // first frame.
                 gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
 
-                let bounds = Bounds::centered(None, gpui::size(px(1240.0), px(820.0)), cx);
+                // Sized for the session screen's two-column layout (terminal + tasks rail);
+                // 1240px forced the terminal pane too narrow to be useful.
+                let bounds = Bounds::centered(None, gpui::size(px(1600.0), px(1000.0)), cx);
                 let options = WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitleBar::title_bar_options()),

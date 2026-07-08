@@ -58,6 +58,12 @@ RUN set -eux; \
     install -m 0755 "$(find /root -name opencode -type f | head -1)" /usr/local/bin/opencode; \
     opencode --version
 
+# zellij: simplified ASCII UI — the embedded terminal's font set has no powerline /
+# special glyphs, which otherwise render as "?" in the pane chrome.
+RUN mkdir -p /sandbox/.config/zellij \
+    && printf 'simplified_ui true\npane_frames false\n' > /sandbox/.config/zellij/config.kdl \
+    && chown -R sandbox:sandbox /sandbox/.config/zellij
+
 # Agent + fixture land in the sandbox user's home.
 COPY --chown=sandbox:sandbox opencode.json /sandbox/.config/opencode/opencode.json
 COPY --chown=sandbox:sandbox fixture/ /sandbox/fixture/
